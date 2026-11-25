@@ -1,12 +1,12 @@
-
 "use client";
 
-import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useCallback, useEffect, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 
 export default function ChallengeDetailPage() {
   const { id } = useParams();
+  const router = useRouter();
 
   const [challenge, setChallenge] = useState(null);
   const [submissions, setSubmissions] = useState([]);
@@ -14,83 +14,199 @@ export default function ChallengeDetailPage() {
   const [myArtworks, setMyArtworks] = useState([]);
   const [selectedArtwork, setSelectedArtwork] = useState("");
   const [user, setUser] = useState(null);
+  const [accessGranted, setAccessGranted] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [message, setMessage] = useState("");
+  const [withdrawing, setWithdrawing] = useState(false);
+  const [bannerError, setBannerError] = useState(false);
+  const [feedback, setFeedback] = useState({ type: "", text: "" });
   const [error, setError] = useState("");
 
+  const refreshChallengeAndSubmissions = useCallback(async () => {
+    const [challengeRes, submissionRes, winnerRes] = await Promise.all([
+      fetch(`/api/challenges/${id}`, { cache: "no-store" }),
+      fetch(`/api/challenges/${id}/submissions`, { cache: "no-store" }),
+      fetch(`/api/challenges/${id}/winners`, { cache: "no-store" }),
+    ]);
+
+    const [challengeData, submissionData, winnerData] = await Promise.all([
+      challengeRes.json(),
+      submissionRes.json(),
+      winnerRes.json(),
+    ]);
+
+    if (challengeRes.ok && challengeData.success) {
+      setChallenge(challengeData.data);
+    }
+
+    if (submissionRes.ok && submissionData.success) {
+      setSubmissions(submissionData.data || []);
+    }
+
+    if (winnerRes.ok && winnerData.success) {
+      setWinners(winnerData.data || []);
+    }
+  }, [id]);
+
   useEffect(() => {
-    async function getChallengeDetail() {
+    let active = true;
+
+    async function loadDetail() {
       try {
-        const [challengeRes, submissionRes, winnerRes, userRes] =
+        const userResponse = await fetch("/api/me", {
+          cache: "no-store",
+        });
+
+        if (!userResponse.ok) {
+          router.replace("/login");
+          return;
+        }
+
+        const userResult = await userResponse.json();
+
+        if (!userResult.success) {
+          router.replace("/login");
+          return;
+        }
+
+        const currentUser = userResult.data;
+
+        if (currentUser.role === "admin") {
+          router.replace("/dashboard");
+          return;
+        }
+
+        if (
+          currentUser.role === "curator" &&
+          currentUser.curator_status !== "approved"
+        ) {
+          router.replace("/curator/pending");
+          return;
+        }
+
+        if (!["member", "curator"].includes(currentUser.role)) {
+          router.replace("/login");
+          return;
+        }
+
+        if (!active) return;
+
+        setUser(currentUser);
+        setAccessGranted(true);
+
+        const [challengeRes, submissionRes, winnerRes] =
           await Promise.all([
-            fetch(`/api/challenges/${id}`, { cache: "no-store" }),
+            fetch(`/api/challenges/${id}`, {
+              cache: "no-store",
+            }),
             fetch(`/api/challenges/${id}/submissions`, {
               cache: "no-store",
             }),
             fetch(`/api/challenges/${id}/winners`, {
               cache: "no-store",
             }),
-            fetch("/api/me", { cache: "no-store" }),
           ]);
 
-        const challengeData = await challengeRes.json();
-        const submissionData = await submissionRes.json();
-        const winnerData = await winnerRes.json();
-        const userData = await userRes.json();
+        const [challengeData, submissionData, winnerData] =
+          await Promise.all([
+            challengeRes.json(),
+            submissionRes.json(),
+            winnerRes.json(),
+          ]);
 
         if (!challengeRes.ok || !challengeData.success) {
-          throw new Error("Challenge tidak ditemukan.");
+          throw new Error(
+            challengeData.message || "Challenge tidak ditemukan."
+          );
         }
 
         if (!submissionRes.ok || !submissionData.success) {
-          throw new Error("Gagal mengambil daftar peserta.");
+          throw new Error(
+            submissionData.message || "Gagal mengambil daftar peserta."
+          );
         }
 
         if (!winnerRes.ok || !winnerData.success) {
-          throw new Error("Gagal mengambil daftar pemenang.");
+          throw new Error(
+            winnerData.message || "Gagal mengambil daftar pemenang."
+          );
         }
+
+        if (!active) return;
 
         setChallenge(challengeData.data);
         setSubmissions(submissionData.data || []);
         setWinners(winnerData.data || []);
 
-        if (userRes.ok && userData.success) {
-          setUser(userData.data);
+        if (currentUser.role === "member") {
+          const artworkRes = await fetch("/api/artworks", {
+            cache: "no-store",
+          });
 
-          if (userData.data.role === "member") {
-            const artworkRes = await fetch("/api/artworks", {
-              cache: "no-store",
-            });
+          const artworkData = await artworkRes.json();
 
-            const artworkData = await artworkRes.json();
-
-            if (artworkRes.ok && artworkData.success) {
-              setMyArtworks(
-                (artworkData.data || []).filter(
-                  (artwork) =>
-                    artwork.user_id === userData.data.user_id &&
-                    artwork.status !== "taken_down"
-                )
-              );
-            }
+          if (artworkRes.ok && artworkData.success && active) {
+            const memberWorks = (artworkData.data || []).filter(
+              (artwork) =>
+                Number(artwork.user_id) === Number(currentUser.user_id) &&
+                artwork.source_type === "member" &&
+                artwork.status === "published"
+            );
+            setMyArtworks(memberWorks);
           }
         }
       } catch (err) {
-        setError(err.message);
+        if (active) {
+          setError(err.message);
+        }
       } finally {
-        setLoading(false);
+        if (active) {
+          setLoading(false);
+        }
       }
     }
 
-    if (id) getChallengeDetail();
-  }, [id]);
+    if (id) {
+      loadDetail();
+    }
+
+    return () => {
+      active = false;
+    };
+  }, [id, router]);
+
+  function parseLocalDate(date) {
+    const [year, month, day] = String(date)
+      .slice(0, 10)
+      .split("-");
+
+    return new Date(
+      Number(year),
+      Number(month) - 1,
+      Number(day)
+    );
+  }
 
   function formatDate(date) {
-    return new Date(date).toLocaleDateString("id-ID", {
+    if (!date) return "-";
+    return parseLocalDate(date).toLocaleDateString("id-ID", {
       day: "numeric",
       month: "long",
       year: "numeric",
+    });
+  }
+
+  function formatDateTime(timestamp) {
+    if (!timestamp) return "-";
+    const parsed = new Date(timestamp);
+    if (Number.isNaN(parsed.getTime())) return formatDate(timestamp);
+
+    return parsed.toLocaleDateString("id-ID", {
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
     });
   }
 
@@ -100,22 +216,28 @@ export default function ChallengeDetailPage() {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const start = new Date(challenge.start_date);
-    const end = new Date(challenge.end_date);
+    const start = parseLocalDate(challenge.start_date);
+    const end = parseLocalDate(challenge.end_date);
 
     if (today < start) return "Segera Dibuka";
     if (today > end) return "Selesai";
+
     return "Sedang Berlangsung";
   }
 
-  async function handleSubmitArtwork() {
+  async function handleSubmitArtwork(event) {
+    if (event) event.preventDefault();
+
     if (!selectedArtwork) {
-      setMessage("Pilih karya terlebih dahulu.");
+      setFeedback({
+        type: "error",
+        text: "Pilih karya terlebih dahulu sebelum mengirim submission.",
+      });
       return;
     }
 
     setSubmitting(true);
-    setMessage("");
+    setFeedback({ type: "", text: "" });
 
     try {
       const response = await fetch(
@@ -134,69 +256,73 @@ export default function ChallengeDetailPage() {
       const result = await response.json();
 
       if (!response.ok || !result.success) {
-        throw new Error(result.message || "Gagal mengirim karya.");
+        throw new Error(
+          result.message || "Gagal mengirim karya ke challenge."
+        );
       }
 
-      setMessage("Karya berhasil dikirim ke challenge!");
       setSelectedArtwork("");
+      await refreshChallengeAndSubmissions();
 
-      const updated = await fetch(
-        `/api/challenges/${id}/submissions`,
-        { cache: "no-store" }
-      );
-
-      const updatedData = await updated.json();
-
-      if (updated.ok && updatedData.success) {
-        setSubmissions(updatedData.data || []);
-      }
+      setFeedback({
+        type: "success",
+        text: result.message || "Karya berhasil dikirim ke challenge!",
+      });
     } catch (err) {
-      setMessage(err.message);
+      setFeedback({
+        type: "error",
+        text: err.message || "Gagal mengirim karya ke challenge.",
+      });
     } finally {
       setSubmitting(false);
     }
   }
 
   async function handleWithdraw(submissionId) {
-    const confirmed = window.confirm(
-      "Yakin ingin menarik karya dari challenge ini?"
-    );
+    if (
+      !window.confirm(
+        "Yakin ingin menarik karya dari challenge ini?"
+      )
+    ) {
+      return;
+    }
 
-    if (!confirmed) return;
+    setWithdrawing(true);
+    setFeedback({ type: "", text: "" });
 
     try {
       const response = await fetch(
-        `/api/challenges/${id}/submissions`,
+        `/api/challenges/${id}/submissions?submission_id=${submissionId}`,
         {
           method: "DELETE",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            submission_id: submissionId,
-          }),
         }
       );
 
       const result = await response.json();
 
       if (!response.ok || !result.success) {
-        throw new Error(result.message || "Gagal menarik karya.");
+        throw new Error(
+          result.message || "Gagal menarik karya."
+        );
       }
 
-      setMessage("Karya berhasil ditarik.");
+      await refreshChallengeAndSubmissions();
 
-      setSubmissions((current) =>
-        current.filter(
-          (submission) => submission.submission_id !== submissionId
-        )
-      );
+      setFeedback({
+        type: "success",
+        text: result.message || "Karya berhasil ditarik dari challenge.",
+      });
     } catch (err) {
-      setMessage(err.message);
+      setFeedback({
+        type: "error",
+        text: err.message || "Gagal menarik karya.",
+      });
+    } finally {
+      setWithdrawing(false);
     }
   }
 
-  if (loading) {
+  if (loading || !accessGranted) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-[#F3EFE7] text-[#77796B]">
         Memuat detail challenge...
@@ -210,50 +336,58 @@ export default function ChallengeDetailPage() {
         <h1 className="font-serif text-3xl">
           Challenge tidak ditemukan
         </h1>
-        <p className="mt-3 text-sm text-[#77796B]">{error}</p>
-        <Link href="/challenges" className="mt-6 text-[#B87559] underline">
+
+        <p className="mt-3 text-sm text-[#77796B]">
+          {error}
+        </p>
+
+        <Link
+          href="/challenges"
+          className="mt-6 text-[#B87559] underline"
+        >
           Kembali ke Challenges
         </Link>
       </main>
     );
   }
 
-  const isActive = getStatus() === "Sedang Berlangsung";
+  const isMember = user?.role === "member";
+  const statusLabel = getStatus();
+  const isActive = statusLabel === "Sedang Berlangsung";
 
   const mySubmission = submissions.find(
-    (submission) => submission.user_id === user?.user_id
+    (submission) =>
+      Number(submission.user_id) === Number(user?.user_id) &&
+      submission.status === "active"
+  );
+
+  const myWinningRank = mySubmission
+    ? winners.find(
+        (w) => Number(w.submission_id) === Number(mySubmission.submission_id)
+      )?.rank
+    : null;
+
+  const selectedArtworkPreview = myArtworks.find(
+    (art) => String(art.artwork_id) === String(selectedArtwork)
   );
 
   return (
     <main className="min-h-screen bg-[#F3EFE7] text-[#34312E]">
-      <nav className="flex items-center justify-between border-b border-[#DED4C5] px-6 py-5 md:px-12">
-        <Link href="/" className="font-serif text-2xl font-semibold">
-          SONDER
-        </Link>
-
-        <div className="flex gap-6 text-sm">
-          <Link href="/">Home</Link>
-          <Link href="/explore">Explore</Link>
-          <Link href="/challenges" className="text-[#B87559]">
-            Challenges
-          </Link>
-        </div>
-      </nav>
-
       <section className="mx-auto max-w-6xl px-6 pb-16 pt-12 md:px-12">
         <Link
           href="/challenges"
-          className="text-xs uppercase tracking-widest text-[#77796B]"
+          className="text-xs uppercase tracking-widest text-[#77796B] hover:text-[#B87559]"
         >
           ← Kembali ke Challenges
         </Link>
 
         <div className="mt-10 grid gap-10 md:grid-cols-2 md:items-center">
           <div className="overflow-hidden bg-[#DED4C5]">
-            {challenge.banner_url ? (
+            {challenge.banner_url && !bannerError ? (
               <img
                 src={challenge.banner_url}
                 alt={challenge.title}
+                onError={() => setBannerError(true)}
                 className="h-80 w-full object-cover"
               />
             ) : (
@@ -264,9 +398,17 @@ export default function ChallengeDetailPage() {
           </div>
 
           <div>
-            <p className="text-xs uppercase tracking-[0.3em] text-[#B87559]">
-              {getStatus()}
-            </p>
+            <div className="flex flex-wrap items-center gap-3">
+              <p className="text-xs uppercase tracking-[0.3em] text-[#B87559]">
+                {statusLabel}
+              </p>
+              <span className="text-xs text-[#77796B]">
+                · Dikurasi oleh{" "}
+                <strong className="font-medium text-[#34312E]">
+                  {challenge.curator_username || "Curator"}
+                </strong>
+              </span>
+            </div>
 
             <h1 className="mt-5 font-serif text-4xl leading-tight md:text-5xl">
               {challenge.title}
@@ -276,21 +418,37 @@ export default function ChallengeDetailPage() {
               {challenge.description}
             </p>
 
-            <div className="mt-8 border-t border-[#DED4C5] pt-5">
-              <p className="text-xs uppercase tracking-widest text-[#B87559]">
-                Periode Challenge
-              </p>
-              <p className="mt-2 text-sm">
-                {formatDate(challenge.start_date)} —{" "}
-                {formatDate(challenge.end_date)}
-              </p>
+            <div className="mt-8 grid gap-4 border-t border-[#DED4C5] pt-5 sm:grid-cols-2">
+              <div>
+                <p className="text-xs uppercase tracking-widest text-[#B87559]">
+                  Periode Challenge
+                </p>
+
+                <p className="mt-2 text-sm">
+                  {formatDate(challenge.start_date)} —{" "}
+                  {formatDate(challenge.end_date)}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-xs uppercase tracking-widest text-[#B87559]">
+                  Partisipan Aktif
+                </p>
+
+                <p className="mt-2 text-sm">
+                  {submissions.length} karya peserta
+                </p>
+              </div>
             </div>
 
             <div className="mt-6 border-t border-[#DED4C5] pt-5">
               <p className="text-xs uppercase tracking-widest text-[#B87559]">
                 Reward
               </p>
-              <p className="mt-2 text-sm leading-6">{challenge.reward}</p>
+
+              <p className="mt-2 text-sm leading-6">
+                {challenge.reward}
+              </p>
             </div>
           </div>
         </div>
@@ -299,76 +457,153 @@ export default function ChallengeDetailPage() {
           <p className="text-xs uppercase tracking-[0.3em] text-[#B87559]">
             Before You Join
           </p>
-          <h2 className="mt-3 font-serif text-3xl">Aturan Challenge</h2>
+
+          <h2 className="mt-3 font-serif text-3xl">
+            Aturan Challenge
+          </h2>
+
           <p className="mt-6 whitespace-pre-line text-sm leading-8 text-[#77796B]">
             {challenge.rules}
           </p>
         </section>
 
-        {user?.role === "member" && isActive && (
-          <section className="mt-16 border border-[#DED4C5] p-6 md:p-8">
+        {/* Panel Partisipasi Member */}
+        {isMember && (
+          <section className="mt-16 border border-[#DED4C5] bg-[#FCFAF6] p-6 md:p-8">
             <p className="text-xs uppercase tracking-[0.3em] text-[#B87559]">
               Join The Challenge
             </p>
 
             <h2 className="mt-3 font-serif text-3xl">
-              Kirim Karyamu
+              {mySubmission ? "Status Submisi Kamu" : "Kirim Karyamu"}
             </h2>
 
-            {mySubmission ? (
-              <div className="mt-6">
-                <p className="text-sm text-[#77796B]">
-                  Kamu sudah mengirim satu karya untuk challenge ini.
-                </p>
-
-                <button
-                  onClick={() =>
-                    handleWithdraw(mySubmission.submission_id)
-                  }
-                  className="mt-5 border border-[#B87559] px-5 py-3 text-xs uppercase tracking-widest text-[#B87559] hover:bg-[#B87559] hover:text-white"
-                >
-                  Tarik Karya
-                </button>
+            {feedback.text && (
+              <div
+                className={`mt-5 border-l-2 px-4 py-3 text-sm ${
+                  feedback.type === "success"
+                    ? "border-[#77796B] bg-[#77796B]/10 text-[#34312E]"
+                    : "border-[#B87559] bg-[#B87559]/10 text-[#8B4935]"
+                }`}
+              >
+                {feedback.text}
               </div>
-            ) : myArtworks.length === 0 ? (
+            )}
+
+            {mySubmission ? (
+              <div className="mt-6 flex flex-col justify-between gap-6 border border-[#DED4C5] bg-[#F3EFE7] p-5 sm:flex-row sm:items-center">
+                <div className="flex items-center gap-4">
+                  {mySubmission.image_url && (
+                    <img
+                      src={mySubmission.image_url}
+                      alt={mySubmission.title}
+                      className="h-24 w-24 object-cover bg-[#DED4C5]"
+                    />
+                  )}
+
+                  <div>
+                    <span className="inline-block bg-[#34312E] px-3 py-1 text-[10px] uppercase tracking-widest text-[#F3EFE7]">
+                      {myWinningRank
+                        ? `★ Pemenang Juara ${myWinningRank}`
+                        : "Submisi Aktif"}
+                    </span>
+
+                    <h3 className="mt-2 font-serif text-2xl">
+                      {mySubmission.title}
+                    </h3>
+
+                    <p className="mt-1 text-xs text-[#77796B]">
+                      Dikirim pada {formatDateTime(mySubmission.submitted_at)}
+                    </p>
+                  </div>
+                </div>
+
+                {isActive && !myWinningRank && (
+                  <button
+                    type="button"
+                    disabled={withdrawing}
+                    onClick={() =>
+                      handleWithdraw(mySubmission.submission_id)
+                    }
+                    className="self-start border border-[#B87559] px-5 py-3 text-xs uppercase tracking-widest text-[#B87559] transition hover:bg-[#B87559] hover:text-white disabled:opacity-50 sm:self-center"
+                  >
+                    {withdrawing ? "Menarik Karya..." : "Tarik Karya (Withdraw)"}
+                  </button>
+                )}
+              </div>
+            ) : !isActive ? (
               <p className="mt-5 text-sm text-[#77796B]">
-                Kamu belum memiliki karya. Unggah karya terlebih dahulu
-                sebelum mengikuti challenge.
+                {statusLabel === "Segera Dibuka"
+                  ? "Challenge ini belum dimulai. Kamu dapat mengirim karya setelah memasuki tanggal mulai challenge."
+                  : "Periode challenge ini sudah berakhir. Pengiriman karya sudah ditutup."}
               </p>
+            ) : myArtworks.length === 0 ? (
+              <div className="mt-5">
+                <p className="text-sm text-[#77796B]">
+                  Kamu belum memiliki karya yang dipublikasikan. Unggah karya terlebih dahulu sebelum mengikuti challenge.
+                </p>
+                <Link
+                  href="/artwork/create"
+                  className="mt-4 inline-block bg-[#34312E] px-6 py-3 text-xs uppercase tracking-widest text-[#F3EFE7] transition hover:bg-[#B87559]"
+                >
+                  + Unggah Karya Baru
+                </Link>
+              </div>
             ) : (
-              <div className="mt-6">
-                <label className="mb-3 block text-sm">
-                  Pilih karya yang ingin dikirim
+              <form onSubmit={handleSubmitArtwork} className="mt-6">
+                <label className="mb-3 block text-sm font-medium">
+                  Pilih karya dari portofoliomu ({myArtworks.length} karya tersedia)
                 </label>
 
                 <select
                   value={selectedArtwork}
-                  onChange={(e) => setSelectedArtwork(e.target.value)}
-                  className="w-full border border-[#DED4C5] bg-transparent px-4 py-3 text-sm outline-none focus:border-[#B87559]"
+                  onChange={(e) => {
+                    setSelectedArtwork(e.target.value);
+                    setFeedback({ type: "", text: "" });
+                  }}
+                  className="w-full border border-[#DED4C5] bg-[#F3EFE7] px-4 py-3 text-sm outline-none focus:border-[#B87559]"
                 >
-                  <option value="">Pilih karya</option>
+                  <option value="">-- Pilih karya yang ingin dikirim --</option>
+
                   {myArtworks.map((artwork) => (
                     <option
                       key={artwork.artwork_id}
                       value={artwork.artwork_id}
                     >
-                      {artwork.title}
+                      {artwork.title} ({artwork.category_name})
                     </option>
                   ))}
                 </select>
 
-                <button
-                  onClick={handleSubmitArtwork}
-                  disabled={submitting}
-                  className="mt-5 bg-[#34312E] px-6 py-3 text-xs uppercase tracking-widest text-[#F3EFE7] hover:bg-[#B87559] disabled:opacity-50"
-                >
-                  {submitting ? "Mengirim..." : "Submit Artwork"}
-                </button>
-              </div>
-            )}
+                {selectedArtworkPreview && (
+                  <div className="mt-4 flex items-center gap-4 border border-[#DED4C5] bg-[#F3EFE7] p-4">
+                    <img
+                      src={selectedArtworkPreview.image_url}
+                      alt={selectedArtworkPreview.title}
+                      className="h-20 w-20 object-cover bg-[#DED4C5]"
+                    />
+                    <div>
+                      <p className="text-xs uppercase tracking-widest text-[#B87559]">
+                        Pratinjau Karya Terpilih
+                      </p>
+                      <h4 className="mt-1 font-serif text-xl">
+                        {selectedArtworkPreview.title}
+                      </h4>
+                      <p className="text-xs text-[#77796B]">
+                        {selectedArtworkPreview.category_name}
+                      </p>
+                    </div>
+                  </div>
+                )}
 
-            {message && (
-              <p className="mt-5 text-sm text-[#B87559]">{message}</p>
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="mt-5 bg-[#34312E] px-6 py-3 text-xs uppercase tracking-widest text-[#F3EFE7] transition hover:bg-[#B87559] disabled:opacity-50"
+                >
+                  {submitting ? "Mengirim Karya..." : "Submit Artwork"}
+                </button>
+              </form>
             )}
           </section>
         )}
@@ -379,10 +614,12 @@ export default function ChallengeDetailPage() {
               <p className="text-xs uppercase tracking-[0.3em] text-[#B87559]">
                 Community Works
               </p>
+
               <h2 className="mt-3 font-serif text-3xl">
                 Karya Peserta
               </h2>
             </div>
+
             <span className="text-xs text-[#77796B]">
               {submissions.length} karya
             </span>
@@ -398,7 +635,7 @@ export default function ChallengeDetailPage() {
                 <Link
                   key={submission.submission_id}
                   href={`/artwork/${submission.artwork_id}`}
-                  className="group"
+                  className="group block border border-[#DED4C5] bg-[#FCFAF6] p-4 transition hover:border-[#B87559]"
                 >
                   <div className="overflow-hidden bg-[#DED4C5]">
                     <img
@@ -412,8 +649,12 @@ export default function ChallengeDetailPage() {
                     {submission.title}
                   </h3>
 
-                  <p className="mt-2 text-xs text-[#77796B]">
-                    by {submission.username}
+                  <p className="mt-1 text-xs text-[#34312E]">
+                    oleh <span className="font-medium">{submission.username}</span>
+                  </p>
+
+                  <p className="mt-1 text-[11px] text-[#77796B]">
+                    Dikirim: {formatDateTime(submission.submitted_at)}
                   </p>
                 </Link>
               ))}
@@ -425,6 +666,7 @@ export default function ChallengeDetailPage() {
           <p className="text-xs uppercase tracking-[0.3em] text-[#B87559]">
             Recognition
           </p>
+
           <h2 className="mt-3 font-serif text-3xl">
             Pemenang Challenge
           </h2>
@@ -439,7 +681,7 @@ export default function ChallengeDetailPage() {
                 <Link
                   key={winner.winner_id}
                   href={`/artwork/${winner.artwork_id}`}
-                  className="group"
+                  className="group block border border-[#DED4C5] bg-[#FCFAF6] p-4 transition hover:border-[#B87559]"
                 >
                   <div className="overflow-hidden bg-[#DED4C5]">
                     <img
@@ -450,15 +692,15 @@ export default function ChallengeDetailPage() {
                   </div>
 
                   <p className="mt-4 text-xs uppercase tracking-widest text-[#B87559]">
-                    Rank {winner.rank}
+                    Juara {winner.rank}
                   </p>
 
-                  <h3 className="mt-2 font-serif text-xl">
+                  <h3 className="mt-2 font-serif text-xl group-hover:text-[#B87559]">
                     {winner.title}
                   </h3>
 
                   <p className="mt-2 text-xs text-[#77796B]">
-                    by {winner.username}
+                    oleh {winner.username}
                   </p>
                 </Link>
               ))}

@@ -1,3 +1,4 @@
+
 import db from "@/lib/db";
 import {
   requireRole,
@@ -18,7 +19,27 @@ export async function PATCH(request, { params }) {
 
   try {
     const { id } = await params;
-    const { status } = await request.json();
+    const curatorId = Number(id);
+
+    if (!Number.isInteger(curatorId) || curatorId <= 0) {
+      return Response.json(
+        { success: false, message: "ID Curator tidak valid." },
+        { status: 400 }
+      );
+    }
+
+    let body;
+
+    try {
+      body = await request.json();
+    } catch {
+      return Response.json(
+        { success: false, message: "Format permintaan tidak valid." },
+        { status: 400 }
+      );
+    }
+
+    const { status } = body;
 
     if (!["approved", "rejected"].includes(status)) {
       return Response.json(
@@ -32,29 +53,37 @@ export async function PATCH(request, { params }) {
        SET curator_status = $1
        WHERE user_id = $2
          AND role = 'curator'
+         AND curator_status = 'pending'
        RETURNING user_id, username, curator_status`,
-      [status, id]
+      [status, curatorId]
     );
 
     if (result.rowCount === 0) {
       return Response.json(
-        { success: false, message: "Curator tidak ditemukan." },
+        {
+          success: false,
+          message: "Pendaftaran Curator tidak ditemukan atau sudah diproses.",
+        },
         { status: 404 }
       );
     }
 
     return Response.json({
       success: true,
-      message: status === "approved"
-        ? "Curator berhasil disetujui."
-        : "Pendaftaran Curator ditolak.",
+      message:
+        status === "approved"
+          ? "Curator berhasil disetujui."
+          : "Pendaftaran Curator ditolak.",
       data: result.rows[0],
     });
   } catch (error) {
-    console.error(error);
+    console.error("PATCH ADMIN CURATOR ERROR:", error);
 
     return Response.json(
-      { success: false, message: "Gagal memperbarui status Curator." },
+      {
+        success: false,
+        message: "Gagal memperbarui status Curator.",
+      },
       { status: 500 }
     );
   }

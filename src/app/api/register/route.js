@@ -1,36 +1,40 @@
-
 import db from "@/lib/db";
 import bcrypt from "bcryptjs";
+import { isSameOriginRequest } from "@/lib/get-user";
 
 export async function POST(request) {
   try {
-    const body = await request.json();
+    if (!isSameOriginRequest(request)) {
+      return Response.json(
+        { success: false, message: "Request tidak valid." },
+        { status: 403 }
+      );
+    }
 
+    const body = await request.json();
     const { username, email, password, role } = body;
 
-    // Validasi input
-    if (!username || !email || !password) {
+    if (!username?.trim() || !email?.trim() || !password) {
       return Response.json(
-        { message: "Semua data wajib diisi." },
+        { success: false, message: "Semua data wajib diisi." },
         { status: 400 }
       );
     }
 
     if (password.length < 8) {
       return Response.json(
-        { message: "Password minimal 8 karakter." },
+        { success: false, message: "Password minimal 8 karakter." },
         { status: 400 }
       );
     }
 
     if (!["member", "curator"].includes(role)) {
       return Response.json(
-        { message: "Role tidak valid." },
+        { success: false, message: "Role tidak valid." },
         { status: 400 }
       );
     }
 
-    // Memeriksa email dan username
     const existingUser = await db.query(
       `SELECT user_id FROM users
        WHERE LOWER(email) = LOWER($1)
@@ -40,17 +44,13 @@ export async function POST(request) {
 
     if (existingUser.rows.length > 0) {
       return Response.json(
-        { message: "Username atau email sudah digunakan." },
+        { success: false, message: "Username atau email sudah digunakan." },
         { status: 409 }
       );
     }
 
-    // Mengamankan password
     const passwordHash = await bcrypt.hash(password, 10);
-
-    // Menyimpan pengguna baru
-    const curatorStatus =
-      role === "curator" ? "pending" : null;
+    const curatorStatus = role === "curator" ? "pending" : null;
 
     const result = await db.query(
       `INSERT INTO users
@@ -75,10 +75,10 @@ export async function POST(request) {
       { status: 201 }
     );
   } catch (error) {
-    console.error(error);
+    console.error("REGISTER ERROR:", error);
 
     return Response.json(
-      { message: "Terjadi kesalahan saat registrasi." },
+      { success: false, message: "Terjadi kesalahan saat registrasi." },
       { status: 500 }
     );
   }

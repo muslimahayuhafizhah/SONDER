@@ -1,8 +1,6 @@
-
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 export default function AdminDashboard({ user }) {
   const [activeTab, setActiveTab] = useState("overview");
@@ -12,6 +10,7 @@ export default function AdminDashboard({ user }) {
   const [reports, setReports] = useState([]);
   const [users, setUsers] = useState([]);
   const [categories, setCategories] = useState([]);
+  const [roleFilter, setRoleFilter] = useState("all");
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -196,13 +195,19 @@ export default function AdminDashboard({ user }) {
     await sendAction(`/api/categories/${id}`, "DELETE");
   }
 
+  const filteredUsers = useMemo(() => {
+    if (roleFilter === "all") return users;
+    return users.filter((u) => u.role === roleFilter);
+  }, [users, roleFilter]);
+
   const statLabels = {
     total_members: "Total Member",
-    total_curators: "Total Curator",
+    total_curators: "Total Curator (Approved)",
     pending_curators: "Curator Menunggu",
     total_artworks: "Total Karya",
     total_categories: "Total Kategori",
     total_challenges: "Total Challenge",
+    active_challenges: "Challenge Aktif",
     pending_reports: "Laporan Menunggu",
     total_comments: "Total Komentar",
     total_likes: "Total Likes",
@@ -210,18 +215,6 @@ export default function AdminDashboard({ user }) {
 
   return (
     <main className="min-h-screen bg-[#F3EFE7] text-[#34312E]">
-      <nav className="border-b border-[#DED4C5] px-6 md:px-12 py-5 flex justify-between items-center">
-        <Link href="/" className="font-serif text-2xl tracking-wide">
-          SONDER
-        </Link>
-
-        <div className="flex gap-5 text-sm">
-          <Link href="/explore">Explore</Link>
-          <Link href="/challenges">Challenges</Link>
-          <Link href="/">Home</Link>
-        </div>
-      </nav>
-
       <section className="max-w-7xl mx-auto px-6 md:px-12 py-14">
         <div className="mb-10">
           <p className="text-sm uppercase tracking-[0.25em] text-[#B87559] mb-3">
@@ -377,7 +370,7 @@ export default function AdminDashboard({ user }) {
             {activeTab === "reports" && (
               <section>
                 <h2 className="font-serif text-3xl mb-6">
-                  Moderasi Laporan
+                  Moderasi Laporan (Moderation Queue)
                 </h2>
 
                 {reports.length === 0 ? (
@@ -414,6 +407,10 @@ export default function AdminDashboard({ user }) {
                               Alasan: {report.reason}
                             </p>
 
+                            <p className="text-xs text-[#77796B] mt-1">
+                              Total Laporan pada Karya Ini: {report.report_count || 1} laporan
+                            </p>
+
                             <p className="text-xs text-[#B87559] mt-2">
                               Status: {report.status}
                             </p>
@@ -428,7 +425,7 @@ export default function AdminDashboard({ user }) {
                                 }
                                 className="border border-[#B8AA98] px-4 py-3 text-sm disabled:opacity-50"
                               >
-                                Dismiss
+                                Dismiss Report
                               </button>
 
                               <button
@@ -452,17 +449,34 @@ export default function AdminDashboard({ user }) {
 
             {activeTab === "users" && (
               <section>
-                <h2 className="font-serif text-3xl mb-6">
-                  Pengelolaan Pengguna
-                </h2>
+                <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+                  <h2 className="font-serif text-3xl">
+                    Pengelolaan Pengguna
+                  </h2>
 
-                {users.length === 0 ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs uppercase tracking-widest text-[#77796B]">
+                      Filter Peran:
+                    </span>
+                    <select
+                      value={roleFilter}
+                      onChange={(e) => setRoleFilter(e.target.value)}
+                      className="border border-[#DED4C5] bg-[#FCFAF6] px-4 py-2 text-sm outline-none"
+                    >
+                      <option value="all">Semua Peran ({users.length})</option>
+                      <option value="member">Member</option>
+                      <option value="curator">Curator</option>
+                    </select>
+                  </div>
+                </div>
+
+                {filteredUsers.length === 0 ? (
                   <p className="text-[#77796B]">
-                    Belum ada pengguna yang terdaftar.
+                    Tidak ada pengguna pada filter ini.
                   </p>
                 ) : (
                   <div className="space-y-3">
-                    {users.map((item) => (
+                    {filteredUsers.map((item) => (
                       <article
                         key={item.user_id}
                         className="border border-[#DED4C5] p-5 flex flex-col md:flex-row md:items-center justify-between gap-4"

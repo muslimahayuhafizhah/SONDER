@@ -1,3 +1,4 @@
+
 import db from "@/lib/db";
 import {
   requireRole,
@@ -18,10 +19,21 @@ export async function DELETE(request, { params }) {
 
   try {
     const { id } = await params;
+    const userId = Number(id);
 
-    if (Number(id) === Number(user.user_id)) {
+    if (!Number.isInteger(userId) || userId <= 0) {
       return Response.json(
-        { success: false, message: "Admin tidak dapat menghapus akunnya sendiri melalui fitur ini." },
+        { success: false, message: "ID pengguna tidak valid." },
+        { status: 400 }
+      );
+    }
+
+    if (userId === Number(user.user_id)) {
+      return Response.json(
+        {
+          success: false,
+          message: "Admin tidak dapat menghapus akunnya sendiri melalui fitur ini.",
+        },
         { status: 400 }
       );
     }
@@ -31,12 +43,15 @@ export async function DELETE(request, { params }) {
        WHERE user_id = $1
          AND role IN ('member', 'curator')
        RETURNING user_id`,
-      [id]
+      [userId]
     );
 
     if (result.rowCount === 0) {
       return Response.json(
-        { success: false, message: "Pengguna tidak ditemukan atau tidak dapat dihapus." },
+        {
+          success: false,
+          message: "Pengguna tidak ditemukan atau tidak dapat dihapus.",
+        },
         { status: 404 }
       );
     }
@@ -46,7 +61,7 @@ export async function DELETE(request, { params }) {
       message: "Akun pengguna berhasil dihapus.",
     });
   } catch (error) {
-    console.error(error);
+    console.error("DELETE ADMIN USER ERROR:", error);
 
     if (error.code === "23503") {
       return Response.json(

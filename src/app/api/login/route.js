@@ -1,23 +1,28 @@
-
 import db from "@/lib/db";
 import bcrypt from "bcryptjs";
 import { createSession } from "@/lib/auth";
+import { isSameOriginRequest } from "@/lib/get-user";
 import { cookies } from "next/headers";
 
 export async function POST(request) {
   try {
-    const body = await request.json();
+    if (!isSameOriginRequest(request)) {
+      return Response.json(
+        { success: false, message: "Request tidak valid." },
+        { status: 403 }
+      );
+    }
 
+    const body = await request.json();
     const { email, password } = body;
 
-    if (!email || !password) {
+    if (!email?.trim() || !password) {
       return Response.json(
-        { message: "Email dan password wajib diisi." },
+        { success: false, message: "Email dan password wajib diisi." },
         { status: 400 }
       );
     }
 
-    // Mencari akun berdasarkan email
     const result = await db.query(
       `SELECT * FROM users
        WHERE LOWER(email) = LOWER($1)`,
@@ -26,14 +31,13 @@ export async function POST(request) {
 
     if (result.rows.length === 0) {
       return Response.json(
-        { message: "Email atau password salah." },
+        { success: false, message: "Email atau password salah." },
         { status: 401 }
       );
     }
 
     const user = result.rows[0];
 
-    // Memeriksa password
     const passwordMatch = await bcrypt.compare(
       password,
       user.password_hash
@@ -41,14 +45,12 @@ export async function POST(request) {
 
     if (!passwordMatch) {
       return Response.json(
-        { message: "Email atau password salah." },
+        { success: false, message: "Email atau password salah." },
         { status: 401 }
       );
     }
 
-    // Membuat session
     const token = await createSession(user);
-
     const cookieStore = await cookies();
 
     cookieStore.set("sonder_session", token, {
@@ -70,10 +72,10 @@ export async function POST(request) {
       },
     });
   } catch (error) {
-    console.error(error);
+    console.error("LOGIN ERROR:", error);
 
     return Response.json(
-      { message: "Terjadi kesalahan saat login." },
+      { success: false, message: "Terjadi kesalahan saat login." },
       { status: 500 }
     );
   }

@@ -1,7 +1,8 @@
-
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+import ImageUploader from "@/components/ImageUploader";
 
 const emptyForm = {
   title: "",
@@ -50,10 +51,12 @@ export default function CuratorDashboard({ user }) {
   const [editingId, setEditingId] = useState(null);
   const [selectedSubmission, setSelectedSubmission] = useState("");
   const [selectedRank, setSelectedRank] = useState("1");
+  const [cardRanks, setCardRanks] = useState({});
 
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [uploadingBanner, setUploadingBanner] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState("challenges");
@@ -77,7 +80,6 @@ export default function CuratorDashboard({ user }) {
         ? result.data
         : [];
 
-      // Tampilkan challenge milik Curator yang sedang login.
       const myChallenges = allChallenges.filter(
         (challenge) =>
           Number(challenge.curator_id) === Number(user.user_id)
@@ -134,17 +136,26 @@ export default function CuratorDashboard({ user }) {
         );
       }
 
-      setSubmissions(
-        Array.isArray(submissionResult.data)
-          ? submissionResult.data
-          : []
+      const loadedSubmissions = Array.isArray(submissionResult.data)
+        ? submissionResult.data
+        : [];
+
+      const loadedWinners = Array.isArray(winnerResult.data)
+        ? winnerResult.data
+        : [];
+
+      setSubmissions(loadedSubmissions);
+      setWinners(loadedWinners);
+
+      // Sinkronkan pilihan peringkat yang masih tersedia
+      const usedRanks = loadedWinners.map((w) => Number(w.rank));
+      const nextAvailableRank = [1, 2, 3].find(
+        (r) => !usedRanks.includes(r)
       );
 
-      setWinners(
-        Array.isArray(winnerResult.data)
-          ? winnerResult.data
-          : []
-      );
+      if (nextAvailableRank) {
+        setSelectedRank(String(nextAvailableRank));
+      }
     } catch (err) {
       setError(err.message);
       setSubmissions([]);
@@ -202,6 +213,16 @@ export default function CuratorDashboard({ user }) {
     event.preventDefault();
     setMessage("");
     setError("");
+
+    if (uploadingBanner) {
+      setError("Mohon tunggu hingga proses unggah banner selesai.");
+      return;
+    }
+
+    if (!form.banner_url) {
+      setError("Silakan pilih dan unggah gambar banner challenge terlebih dahulu.");
+      return;
+    }
 
     if (form.end_date <= form.start_date) {
       setError("Tanggal selesai harus setelah tanggal mulai.");
@@ -281,29 +302,65 @@ export default function CuratorDashboard({ user }) {
     }
   }
 
-  async function handleSelectWinner(event) {
-    event.preventDefault();
+  async function assignWinner(submissionId, rankValue) {
     setMessage("");
     setError("");
 
-    if (!selectedChallenge || !selectedSubmission) {
-      setError("Pilih karya yang akan menjadi pemenang.");
+    if (!selectedChallenge) {
+      setError("Pilih challenge terlebih dahulu.");
+      return;
+    }
+
+    const isOwner =
+      Number(selectedChallenge.curator_id) === Number(user.user_id) &&
+      user.role === "curator" &&
+      user.curator_status === "approved";
+
+    if (!isOwner) {
+      setError("Hanya Curator pemilik challenge yang sudah disetujui yang dapat memilih pemenang.");
+      return;
+    }
+
+    if (getChallengeStatus(selectedChallenge) !== "Berakhir") {
+      setError("Pemilihan pemenang hanya dapat dilakukan setelah periode challenge berakhir.");
+      return;
+    }
+
+    const subNum = Number(submissionId);
+    const rankNum = Number(rankValue);
+
+    if (!subNum || ![1, 2, 3].includes(rankNum)) {
+      setError("Pilih karya peserta dan peringkat Juara (1, 2, atau 3) yang valid.");
       return;
     }
 
     if (winners.length >= 3) {
-      setError("Maksimal hanya 3 pemenang.");
+      setError("Maksimal hanya 3 pemenang untuk setiap challenge.");
       return;
     }
 
-    if (
-      winners.some(
-        (winner) => Number(winner.rank) === Number(selectedRank)
-      )
-    ) {
-      setError("Peringkat tersebut sudah memiliki pemenang.");
+    if (winners.some((w) => Number(w.rank) === rankNum)) {
+      setError(`Peringkat Juara ${rankNum} sudah memiliki pemenang.`);
       return;
     }
+
+    if (winners.some((w) => Number(w.submission_id) === subNum)) {
+      setError("Karya ini sudah ditetapkan sebagai pemenang.");
+      return;
+    }
+
+    const targetSubmission = submissions.find(
+      (s) => Number(s.submission_id) === subNum
+    );
+
+    const artworkTitle = targetSubmission?.title || "Karya terpilih";
+    const creatorName = targetSubmission?.username || "Member";
+
+    const confirmed = window.confirm(
+      `Yakin ingin mengumumkan "${artworkTitle}" oleh ${creatorName} sebagai Juara ${rankNum} pada challenge "${selectedChallenge.title}"?`
+    );
+
+    if (!confirmed) return;
 
     setSaving(true);
 
@@ -316,8 +373,8 @@ export default function CuratorDashboard({ user }) {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            submission_id: Number(selectedSubmission),
-            rank: Number(selectedRank),
+            submission_id: subNum,
+            rank: rankNum,
           }),
         }
       );
@@ -330,7 +387,10 @@ export default function CuratorDashboard({ user }) {
         );
       }
 
-      setMessage("Pemenang berhasil diumumkan.");
+      setMessage(
+        result.message ||
+          `Pemenang Juara ${rankNum} berhasil diumumkan.`
+      );
       setSelectedSubmission("");
 
       await loadChallengeDetail(
@@ -343,8 +403,17 @@ export default function CuratorDashboard({ user }) {
     }
   }
 
+  async function handleSelectWinner(event) {
+    event.preventDefault();
+    await assignWinner(selectedSubmission, selectedRank);
+  }
+
   const announcedRanks = winners.map((winner) =>
     Number(winner.rank)
+  );
+
+  const remainingRanks = [1, 2, 3].filter(
+    (rank) => !announcedRanks.includes(rank)
   );
 
   const availableSubmissions = submissions.filter(
@@ -356,6 +425,12 @@ export default function CuratorDashboard({ user }) {
           Number(submission.submission_id)
       )
   );
+
+  const isChallengeOwner =
+    selectedChallenge &&
+    Number(selectedChallenge.curator_id) === Number(user.user_id) &&
+    user.role === "curator" &&
+    user.curator_status === "approved";
 
   const challengeEnded =
     selectedChallenge &&
@@ -381,12 +456,12 @@ export default function CuratorDashboard({ user }) {
             </p>
           </div>
 
-          <a
+          <Link
             href="/"
             className="text-sm text-[#77796B] underline underline-offset-4 hover:text-[#B87559]"
           >
             Kembali ke halaman utama
-          </a>
+          </Link>
         </header>
 
         {/* Summary */}
@@ -399,9 +474,18 @@ export default function CuratorDashboard({ user }) {
           </div>
 
           <div className="rounded-2xl border border-[#DED4C5] bg-white p-6">
-            <p className="text-sm text-[#77796B]">Total Submission</p>
+            <p className="text-sm text-[#77796B]">
+              {selectedChallenge
+                ? "Submission Challenge Terpilih"
+                : "Total Seluruh Submission"}
+            </p>
             <p className="mt-3 font-serif text-4xl">
-              {submissions.length}
+              {selectedChallenge
+                ? submissions.length
+                : challenges.reduce(
+                    (acc, item) => acc + Number(item.total_submissions || 0),
+                    0
+                  )}
             </p>
           </div>
 
@@ -542,7 +626,7 @@ export default function CuratorDashboard({ user }) {
                       <div className="p-6">
                         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                           <span className="rounded-full bg-[#F3EFE7] px-3 py-1 text-xs text-[#77796B]">
-                            {status}
+                            {status} · {challenge.total_submissions || 0} peserta
                           </span>
 
                           <span className="text-xs text-[#77796B]">
@@ -569,7 +653,7 @@ export default function CuratorDashboard({ user }) {
                             }}
                             className={`${buttonClass} bg-[#34312E] text-white hover:bg-[#514B45]`}
                           >
-                            Lihat Submission
+                            Lihat Submission & Pemenang ({challenge.total_submissions || 0})
                           </button>
 
                           <button
@@ -614,7 +698,7 @@ export default function CuratorDashboard({ user }) {
               </h2>
 
               <p className="mt-2 text-sm text-[#77796B]">
-                Lengkapi informasi challenge sebelum dipublikasikan.
+                Lengkapi informasi challenge dan unggah gambar banner sebelum dipublikasikan.
               </p>
             </div>
 
@@ -679,20 +763,19 @@ export default function CuratorDashboard({ user }) {
                 />
               </div>
 
-              <div>
-                <label className="mb-2 block text-sm font-medium">
-                  URL Banner
-                </label>
-                <input
-                  type="url"
-                  name="banner_url"
-                  value={form.banner_url}
-                  onChange={handleFormChange}
-                  className={inputClass}
-                  placeholder="https://example.com/banner.jpg"
-                  required
-                />
-              </div>
+              <ImageUploader
+                uploadType="banner"
+                label="Banner Challenge"
+                value={form.banner_url}
+                onChange={(url) =>
+                  setForm((current) => ({
+                    ...current,
+                    banner_url: url,
+                  }))
+                }
+                onUploadingChange={setUploadingBanner}
+                required
+              />
 
               <div className="grid gap-5 sm:grid-cols-2">
                 <div>
@@ -728,10 +811,12 @@ export default function CuratorDashboard({ user }) {
               <div className="flex flex-wrap gap-3 pt-3">
                 <button
                   type="submit"
-                  disabled={saving}
+                  disabled={saving || uploadingBanner}
                   className={`${buttonClass} bg-[#B87559] text-white hover:bg-[#9F6047]`}
                 >
-                  {saving
+                  {uploadingBanner
+                    ? "Mengunggah Banner..."
+                    : saving
                     ? "Menyimpan..."
                     : editingId
                     ? "Simpan Perubahan"
@@ -761,7 +846,7 @@ export default function CuratorDashboard({ user }) {
             <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
               <div>
                 <p className="text-xs uppercase tracking-[0.2em] text-[#B87559]">
-                  Challenge Detail
+                  Challenge Detail · {getChallengeStatus(selectedChallenge)}
                 </p>
 
                 <h2 className="mt-2 font-serif text-3xl">
@@ -769,17 +854,26 @@ export default function CuratorDashboard({ user }) {
                 </h2>
 
                 <p className="mt-2 text-sm text-[#77796B]">
-                  {formatDate(selectedChallenge.start_date)} –{" "}
+                  Periode: {formatDate(selectedChallenge.start_date)} –{" "}
                   {formatDate(selectedChallenge.end_date)}
                 </p>
               </div>
 
-              <button
-                onClick={() => setActiveTab("challenges")}
-                className={`${buttonClass} border border-[#DED4C5] bg-white`}
-              >
-                Kembali ke Challenge
-              </button>
+              <div className="flex flex-wrap gap-3">
+                <Link
+                  href={`/challenges/${selectedChallenge.challenge_id}`}
+                  className={`${buttonClass} border border-[#34312E] bg-transparent text-[#34312E] hover:bg-[#34312E] hover:text-white`}
+                >
+                  Lihat Halaman Publik Challenge ↗
+                </Link>
+
+                <button
+                  onClick={() => setActiveTab("challenges")}
+                  className={`${buttonClass} border border-[#DED4C5] bg-white`}
+                >
+                  Kembali ke Challenge
+                </button>
+              </div>
             </div>
 
             {detailLoading ? (
@@ -790,9 +884,26 @@ export default function CuratorDashboard({ user }) {
               <>
                 {/* Submission List */}
                 <div className="mb-10">
-                  <h3 className="mb-5 font-serif text-2xl">
-                    Karya yang Dikirim ({submissions.length})
-                  </h3>
+                  <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+                    <h3 className="font-serif text-2xl">
+                      Karya yang Dikirim ({submissions.length})
+                    </h3>
+
+                    {!challengeEnded ? (
+                      <span className="rounded-full bg-[#DED4C5] px-4 py-1.5 text-xs text-[#34312E]">
+                        Pemilihan pemenang dibuka setelah tanggal{" "}
+                        {formatDate(selectedChallenge.end_date)}
+                      </span>
+                    ) : winners.length >= 3 ? (
+                      <span className="rounded-full bg-[#77796B] px-4 py-1.5 text-xs text-[#F3EFE7]">
+                        Ketiga pemenang (Juara 1, 2, 3) telah diumumkan
+                      </span>
+                    ) : (
+                      <span className="rounded-full bg-[#B87559]/15 px-4 py-1.5 text-xs font-medium text-[#B87559]">
+                        Challenge telah berakhir · Silakan pilih pemenang ({winners.length}/3 terpilih)
+                      </span>
+                    )}
+                  </div>
 
                   {submissions.length === 0 ? (
                     <div className="rounded-2xl border border-dashed border-[#C9BBA8] px-6 py-12 text-center">
@@ -802,41 +913,144 @@ export default function CuratorDashboard({ user }) {
                     </div>
                   ) : (
                     <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-                      {submissions.map((submission) => (
-                        <article
-                          key={submission.submission_id}
-                          className="overflow-hidden rounded-2xl border border-[#DED4C5] bg-white"
-                        >
-                          {submission.image_url && (
-                            <img
-                              src={submission.image_url}
-                              alt={submission.title || "Karya peserta"}
-                              className="h-52 w-full object-cover"
-                            />
-                          )}
+                      {submissions.map((submission) => {
+                        const winnerEntry = winners.find(
+                          (w) =>
+                            Number(w.submission_id) ===
+                            Number(submission.submission_id)
+                        );
 
-                          <div className="p-5">
-                            <h4 className="font-serif text-xl">
-                              {submission.title || "Tanpa judul"}
-                            </h4>
+                        const currentCardRank =
+                          cardRanks[submission.submission_id] &&
+                          remainingRanks.includes(
+                            Number(cardRanks[submission.submission_id])
+                          )
+                            ? String(cardRanks[submission.submission_id])
+                            : String(remainingRanks[0] || "1");
 
-                            <p className="mt-2 text-sm text-[#77796B]">
-                              Oleh: {submission.username || "Member"}
-                            </p>
+                        return (
+                          <article
+                            key={submission.submission_id}
+                            className={`flex flex-col justify-between overflow-hidden rounded-2xl border bg-white ${
+                              winnerEntry
+                                ? "border-2 border-[#B87559]"
+                                : "border-[#DED4C5]"
+                            }`}
+                          >
+                            <div>
+                              <div className="relative">
+                                {submission.image_url && (
+                                  <img
+                                    src={submission.image_url}
+                                    alt={submission.title || "Karya peserta"}
+                                    className="h-52 w-full object-cover"
+                                  />
+                                )}
 
-                            <p className="mt-1 text-xs text-[#77796B]">
-                              Dikirim:{" "}
-                              {formatDate(submission.submitted_at)}
-                            </p>
+                                {winnerEntry && (
+                                  <span className="absolute left-3 top-3 rounded-full bg-[#B87559] px-3.5 py-1.5 text-xs font-semibold uppercase tracking-widest text-[#F3EFE7] shadow">
+                                    ★ Pemenang Juara {winnerEntry.rank}
+                                  </span>
+                                )}
+                              </div>
 
-                            {submission.status === "withdrawn" && (
-                              <p className="mt-3 text-xs text-red-600">
-                                Submission ditarik oleh Member
-                              </p>
-                            )}
-                          </div>
-                        </article>
-                      ))}
+                              <div className="p-5">
+                                <div className="flex items-start justify-between gap-2">
+                                  <h4 className="font-serif text-xl">
+                                    {submission.title || "Tanpa judul"}
+                                  </h4>
+
+                                  <Link
+                                    href={`/artwork/${submission.artwork_id}`}
+                                    className="text-xs text-[#B87559] underline underline-offset-4"
+                                  >
+                                    Detail ↗
+                                  </Link>
+                                </div>
+
+                                <p className="mt-2 text-sm text-[#77796B]">
+                                  Oleh:{" "}
+                                  <span className="font-medium text-[#34312E]">
+                                    {submission.username || "Member"}
+                                  </span>
+                                </p>
+
+                                <p className="mt-1 text-xs text-[#77796B]">
+                                  Dikirim:{" "}
+                                  {formatDate(submission.submitted_at)}
+                                </p>
+
+                                {winnerEntry && (
+                                  <div className="mt-4 rounded-xl bg-[#F3EFE7] px-3.5 py-2.5 text-xs font-medium text-[#B87559]">
+                                    ✓ Ditetapkan sebagai Juara {winnerEntry.rank}
+                                  </div>
+                                )}
+
+                                {submission.status === "withdrawn" && (
+                                  <p className="mt-3 text-xs text-red-600">
+                                    Submission ditarik oleh Member
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Tombol Pemilihan Pemenang Langsung pada Kartu Submission */}
+                            {isChallengeOwner &&
+                              !winnerEntry &&
+                              submission.status === "active" && (
+                                <div className="border-t border-[#DED4C5] bg-[#FCFAF6] p-4">
+                                  {challengeEnded &&
+                                  remainingRanks.length > 0 ? (
+                                    <div className="flex items-center gap-2">
+                                      <select
+                                        value={currentCardRank}
+                                        onChange={(e) =>
+                                          setCardRanks((prev) => ({
+                                            ...prev,
+                                            [submission.submission_id]:
+                                              e.target.value,
+                                          }))
+                                        }
+                                        disabled={saving}
+                                        className="rounded-xl border border-[#DED4C5] bg-white px-3 py-2 text-xs text-[#34312E] outline-none focus:border-[#B87559]"
+                                      >
+                                        {remainingRanks.map((rank) => (
+                                          <option key={rank} value={rank}>
+                                            Juara {rank}
+                                          </option>
+                                        ))}
+                                      </select>
+
+                                      <button
+                                        type="button"
+                                        disabled={saving}
+                                        onClick={() =>
+                                          assignWinner(
+                                            submission.submission_id,
+                                            currentCardRank
+                                          )
+                                        }
+                                        className="flex-1 rounded-xl bg-[#34312E] px-3 py-2 text-xs font-medium text-[#F3EFE7] transition hover:bg-[#B87559] disabled:opacity-50"
+                                      >
+                                        {saving
+                                          ? "Memproses..."
+                                          : "Jadikan Pemenang"}
+                                      </button>
+                                    </div>
+                                  ) : !challengeEnded ? (
+                                    <p className="text-center text-[11px] text-[#77796B]">
+                                      Tersedia untuk dipilih setelah challenge berakhir
+                                    </p>
+                                  ) : (
+                                    <p className="text-center text-[11px] text-[#77796B]">
+                                      Kuota 3 pemenang sudah terpenuhi
+                                    </p>
+                                  )}
+                                </div>
+                              )}
+                          </article>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -853,111 +1067,123 @@ export default function CuratorDashboard({ user }) {
                     </h3>
 
                     <p className="mt-2 text-sm text-[#77796B]">
-                      Pilih maksimal tiga karya sebagai juara 1, 2, dan 3.
+                      Daftar resmi pemenang Juara 1, 2, dan 3 yang diumumkan pada halaman Challenge Detail.
                     </p>
                   </div>
 
-                  {winners.length > 0 && (
-                    <div className="mb-7 grid gap-3 sm:grid-cols-3">
-                      {[1, 2, 3].map((rank) => {
-                        const winner = winners.find(
-                          (item) => Number(item.rank) === rank
-                        );
+                  <div className="mb-7 grid gap-4 sm:grid-cols-3">
+                    {[1, 2, 3].map((rank) => {
+                      const winner = winners.find(
+                        (item) => Number(item.rank) === rank
+                      );
 
-                        return (
-                          <div
-                            key={rank}
-                            className="rounded-xl bg-[#F3EFE7] p-4"
-                          >
-                            <p className="text-xs uppercase tracking-wider text-[#B87559]">
-                              Juara {rank}
-                            </p>
+                      return (
+                        <div
+                          key={rank}
+                          className={`rounded-xl border p-4 ${
+                            winner
+                              ? "border-[#B87559] bg-[#F3EFE7]"
+                              : "border-[#DED4C5] bg-[#FCFAF6]"
+                          }`}
+                        >
+                          <p className="text-xs font-semibold uppercase tracking-wider text-[#B87559]">
+                            Juara {rank}
+                          </p>
 
-                            <p className="mt-2 font-medium">
-                              {winner
-                                ? winner.title || "Karya terpilih"
-                                : "Belum ditentukan"}
-                            </p>
-
-                            {winner && (
-                              <p className="mt-1 text-xs text-[#77796B]">
-                                {winner.username || "Member"}
+                          {winner ? (
+                            <div className="mt-3">
+                              {winner.image_url && (
+                                <img
+                                  src={winner.image_url}
+                                  alt={winner.title}
+                                  className="mb-3 h-32 w-full rounded-lg object-cover"
+                                />
+                              )}
+                              <p className="font-serif text-lg font-medium">
+                                {winner.title || "Karya terpilih"}
                               </p>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
+                              <p className="mt-1 text-xs text-[#77796B]">
+                                oleh {winner.username || "Member"}
+                              </p>
+                            </div>
+                          ) : (
+                            <p className="mt-3 text-sm italic text-[#77796B]">
+                              Belum ditentukan
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
 
                   {!challengeEnded ? (
                     <p className="rounded-xl bg-[#F3EFE7] p-4 text-sm text-[#77796B]">
                       Pemilihan pemenang dapat dilakukan setelah
-                      periode challenge berakhir.
+                      periode challenge berakhir ({formatDate(selectedChallenge.end_date)}).
                     </p>
                   ) : winners.length >= 3 ? (
-                    <p className="rounded-xl bg-[#F3EFE7] p-4 text-sm text-[#77796B]">
-                      Tiga pemenang sudah diumumkan.
+                    <p className="rounded-xl bg-[#F3EFE7] p-4 text-sm text-[#555C49]">
+                      ✓ Ketiga pemenang sudah diumumkan dan ditampilkan di halaman Challenge Detail.
                     </p>
                   ) : (
-                    <form
-                      onSubmit={handleSelectWinner}
-                      className="grid gap-4 md:grid-cols-[1fr_180px_auto]"
-                    >
-                      <select
-                        value={selectedSubmission}
-                        onChange={(event) =>
-                          setSelectedSubmission(event.target.value)
-                        }
-                        className={inputClass}
-                        required
+                    isChallengeOwner && (
+                      <form
+                        onSubmit={handleSelectWinner}
+                        className="grid gap-4 md:grid-cols-[1fr_180px_auto]"
                       >
-                        <option value="">Pilih karya peserta</option>
+                        <select
+                          value={selectedSubmission}
+                          onChange={(event) =>
+                            setSelectedSubmission(event.target.value)
+                          }
+                          className={inputClass}
+                          required
+                        >
+                          <option value="">Pilih karya peserta</option>
 
-                        {availableSubmissions.map((submission) => (
-                          <option
-                            key={submission.submission_id}
-                            value={submission.submission_id}
-                          >
-                            {submission.title} — {submission.username}
-                          </option>
-                        ))}
-                      </select>
+                          {availableSubmissions.map((submission) => (
+                            <option
+                              key={submission.submission_id}
+                              value={submission.submission_id}
+                            >
+                              {submission.title} — {submission.username}
+                            </option>
+                          ))}
+                        </select>
 
-                      <select
-                        value={selectedRank}
-                        onChange={(event) =>
-                          setSelectedRank(event.target.value)
-                        }
-                        className={inputClass}
-                      >
-                        {[1, 2, 3]
-                          .filter((rank) => !announcedRanks.includes(rank))
-                          .map((rank) => (
+                        <select
+                          value={selectedRank}
+                          onChange={(event) =>
+                            setSelectedRank(event.target.value)
+                          }
+                          className={inputClass}
+                        >
+                          {remainingRanks.map((rank) => (
                             <option key={rank} value={rank}>
                               Juara {rank}
                             </option>
                           ))}
-                      </select>
+                        </select>
 
-                      <button
-                        type="submit"
-                        disabled={
-                          saving ||
-                          availableSubmissions.length === 0
-                        }
-                        className={`${buttonClass} bg-[#B87559] text-white hover:bg-[#9F6047]`}
-                      >
-                        {saving ? "Menyimpan..." : "Tetapkan"}
-                      </button>
-                    </form>
+                        <button
+                          type="submit"
+                          disabled={
+                            saving ||
+                            availableSubmissions.length === 0
+                          }
+                          className={`${buttonClass} bg-[#B87559] text-white hover:bg-[#9F6047]`}
+                        >
+                          {saving ? "Menyimpan..." : "Pilih Pemenang"}
+                        </button>
+                      </form>
+                    )
                   )}
 
                   {challengeEnded &&
                     winners.length < 3 &&
                     availableSubmissions.length === 0 && (
                       <p className="mt-3 text-xs text-[#77796B]">
-                        Tidak ada submission aktif yang tersedia untuk dipilih.
+                        Tidak ada submission aktif tersisa yang dapat dipilih sebagai pemenang.
                       </p>
                     )}
                 </div>

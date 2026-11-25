@@ -1,22 +1,88 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 
+function getSourceBadge(artwork) {
+  if (artwork.source_type === "curated") {
+    return "Koleksi Terkenal · Kurasi";
+  }
+  if (artwork.source_type === "curator") {
+    return "Karya Curator";
+  }
+  return "Karya Member";
+}
+
+function getArtistDisplay(artwork) {
+  if (artwork.source_type === "curated") {
+    return artwork.artist_name || "Maestro Seni";
+  }
+  if (artwork.source_type === "curator") {
+    return `${
+      artwork.member_username || artwork.username || artwork.artist_name || "Curator"
+    } (Curator)`;
+  }
+  return (
+    artwork.member_username ||
+    artwork.username ||
+    artwork.artist_name ||
+    "Member SONDER"
+  );
+}
+
 export default function ExplorePage() {
+  const router = useRouter();
+
   const [artworks, setArtworks] = useState([]);
   const [categories, setCategories] = useState([]);
   const [search, setSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("all");
+  const [selectedSource, setSelectedSource] = useState("all");
+  const [sortBy, setSortBy] = useState("latest");
   const [loading, setLoading] = useState(true);
+  const [accessGranted, setAccessGranted] = useState(false);
   const [error, setError] = useState("");
 
-  // Mengambil data karya dan kategori dari database melalui API
   useEffect(() => {
+    let active = true;
+
     async function getExploreData() {
       try {
-        setLoading(true);
-        setError("");
+        const userResponse = await fetch("/api/me", {
+          cache: "no-store",
+        });
+
+        const userResult = await userResponse.json();
+
+        if (!userResponse.ok || !userResult.success) {
+          router.replace("/login");
+          return;
+        }
+
+        const user = userResult.data;
+
+        if (user.role === "admin") {
+          router.replace("/dashboard");
+          return;
+        }
+
+        if (
+          user.role === "curator" &&
+          user.curator_status !== "approved"
+        ) {
+          router.replace("/curator/pending");
+          return;
+        }
+
+        if (user.role !== "member" && user.role !== "curator") {
+          router.replace("/login");
+          return;
+        }
+
+        if (!active) return;
+
+        setAccessGranted(true);
 
         const [artworkResponse, categoryResponse] = await Promise.all([
           fetch("/api/artworks", { cache: "no-store" }),
@@ -34,26 +100,31 @@ export default function ExplorePage() {
           throw new Error("Gagal mengambil data kategori.");
         }
 
+        if (!active) return;
+
         setArtworks(artworkResult.data || []);
         setCategories(categoryResult.data || []);
       } catch (err) {
-        setError(err.message || "Terjadi kesalahan.");
+        if (active) {
+          setError(err.message || "Terjadi kesalahan.");
+        }
       } finally {
-        setLoading(false);
+        if (active) {
+          setLoading(false);
+        }
       }
     }
 
     getExploreData();
-  }, []);
 
-  // Pencarian dan filter karya
+    return () => {
+      active = false;
+    };
+  }, [router]);
+
   const filteredArtworks = useMemo(() => {
-    return artworks.filter((artwork) => {
-      const artist =
-        artwork.source_type === "curated"
-          ? artwork.artist_name
-          : artwork.username;
-
+    const filtered = artworks.filter((artwork) => {
+      const artist = getArtistDisplay(artwork);
       const keyword = search.toLowerCase();
 
       const matchesSearch =
@@ -66,36 +137,32 @@ export default function ExplorePage() {
         selectedCategory === "all" ||
         String(artwork.category_id) === String(selectedCategory);
 
-      return matchesSearch && matchesCategory;
+      const matchesSource =
+        selectedSource === "all" ||
+        artwork.source_type === selectedSource;
+
+      return matchesSearch && matchesCategory && matchesSource;
     });
-  }, [artworks, search, selectedCategory]);
+
+    return [...filtered].sort((a, b) => {
+      if (sortBy === "popular") {
+        const diff = Number(b.total_likes || 0) - Number(a.total_likes || 0);
+        if (diff !== 0) return diff;
+      }
+      return new Date(b.created_at) - new Date(a.created_at);
+    });
+  }, [artworks, search, selectedCategory, selectedSource, sortBy]);
+
+  if (!accessGranted) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#F3EFE7] text-[#77796B]">
+        Memeriksa akses...
+      </main>
+    );
+  }
 
   return (
     <main className="min-h-screen bg-[#F3EFE7] text-[#34312E]">
-
-      {/* Navigation */}
-      <nav className="flex h-[82px] items-center justify-between border-b border-[#DED4C5] px-[7%]">
-        <a href="/" className="font-serif text-3xl font-semibold tracking-tight">
-          sonder<span className="text-[#B87559]">.</span>
-        </a>
-
-        <div className="flex items-center gap-8 text-sm text-[#77796B]">
-          <a href="/" className="transition hover:text-[#B87559]">
-            Home
-          </a>
-          <a href="/explore" className="text-[#B87559]">
-            Explore
-          </a>
-          <a href="/challenges" className="transition hover:text-[#B87559]">
-            Challenges
-          </a>
-        </div>
-
-        <a href="/login" className="text-sm text-[#77796B] hover:text-[#B87559]">
-          Sign in ↗
-        </a>
-      </nav>
-
       {/* Introduction */}
       <section className="border-b border-[#DED4C5] px-[10%] py-24">
         <p className="text-xs font-semibold tracking-[0.25em] text-[#B87559]">
@@ -133,18 +200,18 @@ export default function ExplorePage() {
           </div>
 
           <p className="text-xs text-[#89847B]">
-            {filteredArtworks.length} pieces
+            {filteredArtworks.length} karya
           </p>
         </div>
 
-        {/* Search and Category Filter */}
-        <div className="mb-10 flex flex-col gap-4 md:flex-row">
+        {/* Search, Source Filter, Category Filter, and Sort */}
+        <div className="mb-10 flex flex-col gap-4 lg:flex-row">
           <div className="flex h-12 flex-1 items-center border border-[#DED4C5] bg-[#FCFAF6] px-4">
             <span className="mr-3 text-xl text-[#B87559]">⌕</span>
 
             <input
               type="text"
-              placeholder="Search artworks, artists, or tags..."
+              placeholder="Cari judul karya, seniman/kreator, atau tags..."
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               className="w-full bg-transparent text-sm outline-none placeholder:text-[#AAA398]"
@@ -152,11 +219,22 @@ export default function ExplorePage() {
           </div>
 
           <select
+            value={selectedSource}
+            onChange={(event) => setSelectedSource(event.target.value)}
+            className="h-12 border border-[#DED4C5] bg-[#FCFAF6] px-4 text-sm outline-none lg:w-56"
+          >
+            <option value="all">Semua Koleksi</option>
+            <option value="member">Karya Member</option>
+            <option value="curator">Karya Curator</option>
+            <option value="curated">Koleksi Terkenal (Kurasi)</option>
+          </select>
+
+          <select
             value={selectedCategory}
             onChange={(event) => setSelectedCategory(event.target.value)}
-            className="h-12 border border-[#DED4C5] bg-[#FCFAF6] px-4 text-sm outline-none md:w-52"
+            className="h-12 border border-[#DED4C5] bg-[#FCFAF6] px-4 text-sm outline-none lg:w-52"
           >
-            <option value="all">All Categories</option>
+            <option value="all">Semua Kategori</option>
 
             {categories.map((category) => (
               <option
@@ -167,44 +245,52 @@ export default function ExplorePage() {
               </option>
             ))}
           </select>
+
+          <select
+            value={sortBy}
+            onChange={(event) => setSortBy(event.target.value)}
+            className="h-12 border border-[#DED4C5] bg-[#FCFAF6] px-4 text-sm outline-none lg:w-44"
+          >
+            <option value="latest">Terbaru</option>
+            <option value="popular">Terpopuler (Suka)</option>
+          </select>
         </div>
 
         {/* Artwork Results */}
         {loading ? (
           <div className="flex min-h-56 items-center justify-center">
-            <p className="font-serif text-2xl">Gathering stories...</p>
+            <p className="font-serif text-2xl">Memuat karya...</p>
           </div>
         ) : error ? (
           <div className="flex min-h-56 flex-col items-center justify-center gap-4">
             <p className="font-serif text-2xl">{error}</p>
+
             <button
               onClick={() => window.location.reload()}
               className="bg-[#34312E] px-6 py-3 text-sm text-[#FCFAF6] transition hover:bg-[#B87559]"
             >
-              Try again
+              Coba Lagi
             </button>
           </div>
         ) : filteredArtworks.length === 0 ? (
           <div className="flex min-h-56 flex-col items-center justify-center gap-3 text-center">
-            <p className="font-serif text-2xl">No artworks found.</p>
+            <p className="font-serif text-2xl">Tidak ada karya ditemukan.</p>
+
             <p className="text-sm text-[#77796B]">
-              Try another keyword or category.
+              Coba gunakan kata kunci, koleksi, atau kategori lain.
             </p>
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-x-6 gap-y-12 sm:grid-cols-2 lg:grid-cols-3">
             {filteredArtworks.map((artwork) => {
-              const artist =
-                artwork.source_type === "curated"
-                  ? artwork.artist_name
-                  : artwork.username;
+              const artist = getArtistDisplay(artwork);
 
-             return (
-                    <Link
-                        key={artwork.artwork_id}
-                        href={`/artwork/${artwork.artwork_id}`}
-                        className="group block min-w-0"
-                    >
+              return (
+                <Link
+                  key={artwork.artwork_id}
+                  href={`/artwork/${artwork.artwork_id}`}
+                  className="group block min-w-0"
+                >
                   <div className="relative h-[340px] overflow-hidden bg-[#DED4C5]">
                     <img
                       src={artwork.image_url}
@@ -216,19 +302,25 @@ export default function ExplorePage() {
                       }}
                     />
 
-                    <span className="absolute bottom-4 left-4 bg-[#F3EFE7] px-3 py-2 text-[10px] uppercase tracking-wider">
+                    <span className="absolute left-4 top-4 bg-[#34312E]/90 px-3 py-1.5 text-[10px] uppercase tracking-wider text-[#F3EFE7]">
+                      {getSourceBadge(artwork)}
+                    </span>
+
+                    <span className="absolute bottom-4 left-4 bg-[#F3EFE7] px-3 py-1.5 text-[10px] uppercase tracking-wider text-[#34312E]">
                       {artwork.category_name}
                     </span>
                   </div>
 
-                  <div className="flex items-center justify-between pt-5">
+                  <div className="flex items-start justify-between gap-3 pt-5">
                     <div>
-                      <h3 className="font-serif text-xl">
+                      <h3 className="font-serif text-xl group-hover:text-[#B87559]">
                         {artwork.title}
                       </h3>
 
                       <p className="mt-1 text-xs text-[#89847B]">
-                        by {artist || "Unknown artist"}
+                        oleh <span className="text-[#34312E]">{artist}</span>
+                        {artwork.artwork_year ? ` · ${artwork.artwork_year}` : ""}{" "}
+                        · ♡ {artwork.total_likes || 0}
                       </p>
                     </div>
 
@@ -236,7 +328,7 @@ export default function ExplorePage() {
                   </div>
 
                   {artwork.description && (
-                    <p className="mt-3 text-xs leading-6 text-[#77796B]">
+                    <p className="mt-3 line-clamp-2 text-xs leading-6 text-[#77796B]">
                       {artwork.description}
                     </p>
                   )}
@@ -260,11 +352,10 @@ export default function ExplorePage() {
         </h2>
       </section>
 
-      {/* Footer */}
       <footer className="flex flex-col justify-between gap-4 px-[10%] py-8 sm:flex-row sm:items-center">
-        <a href="/" className="font-serif text-2xl">
+        <Link href="/" className="font-serif text-2xl">
           sonder.
-        </a>
+        </Link>
 
         <span className="text-xs text-[#89847B]">
           © 2026 SONDER. Every piece has a story.

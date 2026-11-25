@@ -1,3 +1,4 @@
+
 import db from "@/lib/db";
 import {
   requireRole,
@@ -18,11 +19,45 @@ export async function PATCH(request, { params }) {
 
   try {
     const { id } = await params;
-    const { category_name, description } = await request.json();
+    const categoryId = Number(id);
 
-    if (!category_name || !category_name.trim()) {
+    if (!Number.isInteger(categoryId) || categoryId <= 0) {
+      return Response.json(
+        { success: false, message: "ID kategori tidak valid." },
+        { status: 400 }
+      );
+    }
+
+    let body;
+
+    try {
+      body = await request.json();
+    } catch {
+      return Response.json(
+        { success: false, message: "Format permintaan tidak valid." },
+        { status: 400 }
+      );
+    }
+
+    const { category_name, description } = body;
+
+    if (
+      typeof category_name !== "string" ||
+      !category_name.trim()
+    ) {
       return Response.json(
         { success: false, message: "Nama kategori wajib diisi." },
+        { status: 400 }
+      );
+    }
+
+    if (
+      description !== undefined &&
+      description !== null &&
+      typeof description !== "string"
+    ) {
+      return Response.json(
+        { success: false, message: "Deskripsi kategori tidak valid." },
         { status: 400 }
       );
     }
@@ -33,7 +68,11 @@ export async function PATCH(request, { params }) {
            description = $2
        WHERE category_id = $3
        RETURNING *`,
-      [category_name.trim(), description?.trim() || null, id]
+      [
+        category_name.trim(),
+        description?.trim() || null,
+        categoryId,
+      ]
     );
 
     if (result.rowCount === 0) {
@@ -49,7 +88,7 @@ export async function PATCH(request, { params }) {
       data: result.rows[0],
     });
   } catch (error) {
-    console.error(error);
+    console.error("PATCH CATEGORY ERROR:", error);
 
     if (error.code === "23505") {
       return Response.json(
@@ -79,12 +118,20 @@ export async function DELETE(request, { params }) {
 
   try {
     const { id } = await params;
+    const categoryId = Number(id);
+
+    if (!Number.isInteger(categoryId) || categoryId <= 0) {
+      return Response.json(
+        { success: false, message: "ID kategori tidak valid." },
+        { status: 400 }
+      );
+    }
 
     const result = await db.query(
       `DELETE FROM categories
        WHERE category_id = $1
        RETURNING category_id`,
-      [id]
+      [categoryId]
     );
 
     if (result.rowCount === 0) {
@@ -99,7 +146,7 @@ export async function DELETE(request, { params }) {
       message: "Kategori berhasil dihapus.",
     });
   } catch (error) {
-    console.error(error);
+    console.error("DELETE CATEGORY ERROR:", error);
 
     if (error.code === "23503") {
       return Response.json(

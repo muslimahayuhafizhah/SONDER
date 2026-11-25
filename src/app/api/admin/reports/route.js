@@ -18,7 +18,12 @@ export async function GET() {
          a.title AS artwork_title,
          a.image_url,
          a.status AS artwork_status,
-         u.username AS reporter_username
+         u.username AS reporter_username,
+         (
+           SELECT COUNT(*)::int
+           FROM reports r2
+           WHERE r2.artwork_id = r.artwork_id
+         ) AS report_count
        FROM reports r
        JOIN artworks a ON r.artwork_id = a.artwork_id
        JOIN users u ON r.reporter_id = u.user_id

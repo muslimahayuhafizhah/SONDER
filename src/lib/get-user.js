@@ -1,4 +1,3 @@
-
 import { cookies } from "next/headers";
 import db from "@/lib/db";
 import { verifySession } from "@/lib/auth";
@@ -19,7 +18,11 @@ export async function getCurrentUser() {
        username,
        email,
        role,
-       curator_status
+       bio,
+       profile_image,
+       external_link,
+       curator_status,
+       created_at
      FROM users
      WHERE user_id = $1`,
     [session.user_id]

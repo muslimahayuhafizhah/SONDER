@@ -1,3 +1,4 @@
+
 import db from "@/lib/db";
 import {
   requireRole,
@@ -17,10 +18,13 @@ export async function GET() {
       data: result.rows,
     });
   } catch (error) {
-    console.error(error);
+    console.error("GET CATEGORIES ERROR:", error);
 
     return Response.json(
-      { success: false, message: "Gagal mengambil data kategori." },
+      {
+        success: false,
+        message: "Gagal mengambil data kategori.",
+      },
       { status: 500 }
     );
   }
@@ -39,11 +43,36 @@ export async function POST(request) {
   }
 
   try {
-    const { category_name, description } = await request.json();
+    let body;
 
-    if (!category_name || !category_name.trim()) {
+    try {
+      body = await request.json();
+    } catch {
+      return Response.json(
+        { success: false, message: "Format permintaan tidak valid." },
+        { status: 400 }
+      );
+    }
+
+    const { category_name, description } = body;
+
+    if (
+      typeof category_name !== "string" ||
+      !category_name.trim()
+    ) {
       return Response.json(
         { success: false, message: "Nama kategori wajib diisi." },
+        { status: 400 }
+      );
+    }
+
+    if (
+      description !== undefined &&
+      description !== null &&
+      typeof description !== "string"
+    ) {
+      return Response.json(
+        { success: false, message: "Deskripsi kategori tidak valid." },
         { status: 400 }
       );
     }
@@ -52,7 +81,10 @@ export async function POST(request) {
       `INSERT INTO categories (category_name, description)
        VALUES ($1, $2)
        RETURNING *`,
-      [category_name.trim(), description?.trim() || null]
+      [
+        category_name.trim(),
+        description?.trim() || null,
+      ]
     );
 
     return Response.json(
@@ -64,7 +96,7 @@ export async function POST(request) {
       { status: 201 }
     );
   } catch (error) {
-    console.error(error);
+    console.error("POST CATEGORY ERROR:", error);
 
     if (error.code === "23505") {
       return Response.json(

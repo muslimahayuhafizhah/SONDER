@@ -1,4 +1,3 @@
-
 import db from "@/lib/db";
 import { requireRole, isSameOriginRequest } from "@/lib/get-user";
 
@@ -32,22 +31,36 @@ export async function GET(request) {
         [user.user_id, id]
       );
 
+      const isFavorite = Boolean(result.rows[0].is_favorite);
+
       return Response.json({
         success: true,
-        is_favorite: result.rows[0].is_favorite,
+        is_favorite: isFavorite,
+        data: {
+          is_favorite: isFavorite,
+        },
       });
     }
 
     const result = await db.query(
       `SELECT
          a.artwork_id,
+         a.user_id,
+         a.category_id,
          a.title,
+         a.description,
          a.image_url,
+         a.tags,
          a.artist_name,
          a.source_type,
+         c.category_name,
+         u.username AS member_username,
+         u.username,
          f.created_at AS favorited_at
        FROM favorites f
        JOIN artworks a ON a.artwork_id = f.artwork_id
+       JOIN categories c ON c.category_id = a.category_id
+       LEFT JOIN users u ON u.user_id = a.user_id
        WHERE f.user_id = $1
          AND a.status = 'published'
        ORDER BY f.created_at DESC`,
@@ -137,7 +150,18 @@ export async function DELETE(request) {
     if (error) return error;
 
     const { searchParams } = new URL(request.url);
-    const id = Number(searchParams.get("artwork_id"));
+    let rawId = searchParams.get("artwork_id");
+
+    if (!rawId) {
+      try {
+        const body = await request.json();
+        rawId = body?.artwork_id;
+      } catch {
+        // Abaikan jika tidak ada body JSON
+      }
+    }
+
+    const id = Number(rawId);
 
     if (!Number.isInteger(id) || id <= 0) {
       return Response.json(

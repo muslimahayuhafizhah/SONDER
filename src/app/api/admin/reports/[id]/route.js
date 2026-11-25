@@ -18,19 +18,31 @@ export async function PATCH(request, { params }) {
   }
 
   let client;
+  let transactionStarted = false;
 
   try {
     const { id } = await params;
     const reportId = Number(id);
 
-    if (!Number.isInteger(reportId) || reportId < 1) {
+    if (!Number.isInteger(reportId) || reportId <= 0) {
       return Response.json(
         { success: false, message: "ID laporan tidak valid." },
         { status: 400 }
       );
     }
 
-    const { status } = await request.json();
+    let body;
+
+    try {
+      body = await request.json();
+    } catch {
+      return Response.json(
+        { success: false, message: "Format permintaan tidak valid." },
+        { status: 400 }
+      );
+    }
+
+    const { status } = body;
 
     if (!["dismissed", "taken_down"].includes(status)) {
       return Response.json(
@@ -42,6 +54,7 @@ export async function PATCH(request, { params }) {
     client = await db.connect();
 
     await client.query("BEGIN");
+    transactionStarted = true;
 
     const report = await client.query(
       `SELECT report_id, artwork_id, status
@@ -53,6 +66,7 @@ export async function PATCH(request, { params }) {
 
     if (report.rowCount === 0) {
       await client.query("ROLLBACK");
+      transactionStarted = false;
 
       return Response.json(
         { success: false, message: "Laporan tidak ditemukan." },
@@ -62,6 +76,7 @@ export async function PATCH(request, { params }) {
 
     if (report.rows[0].status !== "pending") {
       await client.query("ROLLBACK");
+      transactionStarted = false;
 
       return Response.json(
         { success: false, message: "Laporan ini sudah diproses." },
@@ -72,12 +87,17 @@ export async function PATCH(request, { params }) {
     const artworkId = report.rows[0].artwork_id;
 
     if (status === "taken_down") {
-      await client.query(
+      const artwork = await client.query(
         `UPDATE artworks
          SET status = 'taken_down'
-         WHERE artwork_id = $1`,
+         WHERE artwork_id = $1
+         RETURNING artwork_id`,
         [artworkId]
       );
+
+      if (artwork.rowCount === 0) {
+        throw new Error("Karya tidak ditemukan.");
+      }
 
       await client.query(
         `UPDATE reports
@@ -96,6 +116,7 @@ export async function PATCH(request, { params }) {
     }
 
     await client.query("COMMIT");
+    transactionStarted = false;
 
     return Response.json({
       success: true,
@@ -105,11 +126,15 @@ export async function PATCH(request, { params }) {
           : "Karya berhasil diturunkan dari galeri.",
     });
   } catch (error) {
-    if (client) {
-      await client.query("ROLLBACK");
+    if (transactionStarted && client) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error("ROLLBACK REPORT ERROR:", rollbackError);
+      }
     }
 
-    console.error(error);
+    console.error("PATCH ADMIN REPORT ERROR:", error);
 
     return Response.json(
       { success: false, message: "Gagal memproses laporan." },

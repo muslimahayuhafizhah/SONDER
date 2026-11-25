@@ -1,4 +1,3 @@
-
 import { NextResponse } from "next/server";
 import db from "@/lib/db";
 import { requireRole, isSameOriginRequest } from "@/lib/get-user";
@@ -20,9 +19,20 @@ function validDate(date) {
   );
 }
 
-function validUrl(value) {
+function validBannerUrl(value) {
+  if (typeof value !== "string" || !value.trim()) return false;
+  const trimmed = value.trim();
+
+  if (
+    /^\/uploads\/banners\/[a-zA-Z0-9._-]+\.(jpg|jpeg|png|webp)$/i.test(
+      trimmed
+    )
+  ) {
+    return true;
+  }
+
   try {
-    const url = new URL(value);
+    const url = new URL(trimmed);
     return url.protocol === "http:" || url.protocol === "https:";
   } catch {
     return false;
@@ -32,6 +42,9 @@ function validUrl(value) {
 // GET: Mengambil detail challenge
 export async function GET(request, { params }) {
   try {
+    const { error } = await requireRole(["member", "curator"]);
+    if (error) return error;
+
     const { id } = await params;
 
     if (invalidId(id)) {
@@ -43,11 +56,20 @@ export async function GET(request, { params }) {
 
     const result = await db.query(
       `SELECT
-         c.*,
+         c.challenge_id,
+         c.curator_id,
+         c.title,
+         c.description,
+         c.rules,
+         c.reward,
+         c.banner_url,
+         TO_CHAR(c.start_date, 'YYYY-MM-DD') AS start_date,
+         TO_CHAR(c.end_date, 'YYYY-MM-DD') AS end_date,
+         c.created_at,
          u.username AS curator_username,
          COUNT(DISTINCT s.submission_id) FILTER (
            WHERE s.status = 'active'
-         ) AS total_submissions
+         )::int AS total_submissions
        FROM challenges c
        JOIN users u ON u.user_id = c.curator_id
        LEFT JOIN challenge_submissions s
@@ -112,7 +134,16 @@ export async function PATCH(request, { params }) {
     }
 
     const existing = await db.query(
-      `SELECT *
+      `SELECT
+         challenge_id,
+         curator_id,
+         title,
+         description,
+         rules,
+         reward,
+         banner_url,
+         TO_CHAR(start_date, 'YYYY-MM-DD') AS start_date,
+         TO_CHAR(end_date, 'YYYY-MM-DD') AS end_date
        FROM challenges
        WHERE challenge_id = $1
          AND curator_id = $2`,
@@ -155,7 +186,7 @@ export async function PATCH(request, { params }) {
       !banner_url.trim()
     ) {
       return NextResponse.json(
-        { success: false, message: "Semua data challenge wajib diisi." },
+        { success: false, message: "Semua data challenge wajib diisi, termasuk banner challenge." },
         { status: 400 }
       );
     }
@@ -181,9 +212,9 @@ export async function PATCH(request, { params }) {
       );
     }
 
-    if (!validUrl(banner_url.trim())) {
+    if (!validBannerUrl(banner_url.trim())) {
       return NextResponse.json(
-        { success: false, message: "URL banner tidak valid." },
+        { success: false, message: "File atau URL banner tidak valid." },
         { status: 400 }
       );
     }
@@ -196,11 +227,21 @@ export async function PATCH(request, { params }) {
          rules = $3,
          reward = $4,
          banner_url = $5,
-         start_date = $6,
-         end_date = $7
+         start_date = $6::date,
+         end_date = $7::date
        WHERE challenge_id = $8
          AND curator_id = $9
-       RETURNING *`,
+       RETURNING
+         challenge_id,
+         curator_id,
+         title,
+         description,
+         rules,
+         reward,
+         banner_url,
+         TO_CHAR(start_date, 'YYYY-MM-DD') AS start_date,
+         TO_CHAR(end_date, 'YYYY-MM-DD') AS end_date,
+         created_at`,
       [
         title.trim(),
         description.trim(),

@@ -4,6 +4,9 @@ import { requireRole, isSameOriginRequest } from "@/lib/get-user";
 
 export async function GET(request) {
   try {
+    const { error } = await requireRole(["member", "curator"]);
+    if (error) return error;
+
     const { searchParams } = new URL(request.url);
     const artworkId = Number(searchParams.get("artwork_id"));
 

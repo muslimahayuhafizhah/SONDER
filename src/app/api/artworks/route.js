@@ -1,16 +1,44 @@
-
 import db from "@/lib/db";
-import { getCurrentUser, requireRole } from "@/lib/get-user";
+import {
+  requireRole,
+  isSameOriginRequest,
+} from "@/lib/get-user";
+
+function isValidImageUrl(value) {
+  if (typeof value !== "string" || !value.trim()) return false;
+  const trimmed = value.trim();
+
+  if (
+    /^\/uploads\/artworks\/[a-zA-Z0-9._-]+\.(jpg|jpeg|png|webp)$/i.test(
+      trimmed
+    )
+  ) {
+    return true;
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    return ["http:", "https:"].includes(parsed.protocol);
+  } catch {
+    return false;
+  }
+}
 
 export async function GET() {
   try {
+    const { error } = await requireRole(["member", "curator"]);
+    if (error) return error;
+
     const result = await db.query(`
       SELECT
         a.artwork_id,
+        a.user_id,
+        a.category_id,
         a.title,
         a.description,
         a.image_url,
         a.tags,
+        a.status,
         a.source_type,
         a.artist_name,
         a.artwork_year,
@@ -19,7 +47,13 @@ export async function GET() {
         a.license,
         a.created_at,
         c.category_name,
-        u.username AS member_username
+        u.username AS member_username,
+        u.username,
+        (
+          SELECT COUNT(*)::int
+          FROM likes l
+          WHERE l.artwork_id = a.artwork_id
+        ) AS total_likes
       FROM artworks a
       JOIN categories c
         ON a.category_id = c.category_id
@@ -45,8 +79,14 @@ export async function GET() {
 
 export async function POST(request) {
   try {
-    const { user, error } = await requireRole(["member"]);
+    if (!isSameOriginRequest(request)) {
+      return Response.json(
+        { success: false, message: "Request tidak valid." },
+        { status: 403 }
+      );
+    }
 
+    const { user, error } = await requireRole(["member"]);
     if (error) return error;
 
     const body = await request.json();
@@ -60,7 +100,19 @@ export async function POST(request) {
       !tags?.trim()
     ) {
       return Response.json(
-        { success: false, message: "Semua data karya wajib diisi." },
+        { success: false, message: "Semua data karya wajib diisi, termasuk gambar karya." },
+        { status: 400 }
+      );
+    }
+
+    const parsedTags = tags
+      .split(",")
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+
+    if (parsedTags.length === 0) {
+      return Response.json(
+        { success: false, message: "Minimal 1 tag wajib diisi." },
         { status: 400 }
       );
     }
@@ -74,11 +126,9 @@ export async function POST(request) {
       );
     }
 
-    try {
-      new URL(image_url);
-    } catch {
+    if (!isValidImageUrl(image_url)) {
       return Response.json(
-        { success: false, message: "URL gambar tidak valid." },
+        { success: false, message: "File atau URL gambar karya tidak valid." },
         { status: 400 }
       );
     }
@@ -106,7 +156,7 @@ export async function POST(request) {
         title.trim(),
         description.trim(),
         image_url.trim(),
-        tags.trim(),
+        parsedTags.join(", "),
       ]
     );
 

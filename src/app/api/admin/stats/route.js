@@ -27,6 +27,9 @@ export async function GET() {
 
          (SELECT COUNT(*) FROM challenges) AS total_challenges,
 
+         (SELECT COUNT(*) FROM challenges
+          WHERE CURRENT_DATE BETWEEN start_date::date AND end_date::date) AS active_challenges,
+
          (SELECT COUNT(*) FROM reports
           WHERE status = 'pending') AS pending_reports,
 

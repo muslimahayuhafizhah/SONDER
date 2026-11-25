@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useState } from "react";
@@ -29,11 +28,19 @@ export default function LoginPage() {
 
       const result = await response.json();
 
-      if (!response.ok) {
+      if (!response.ok || !result.success) {
         throw new Error(result.message || "Login gagal.");
       }
 
-      router.push("/");
+      if (
+        result.data?.role === "curator" &&
+        result.data?.curator_status !== "approved"
+      ) {
+        router.push("/curator/pending");
+      } else {
+        router.push("/dashboard");
+      }
+
       router.refresh();
     } catch (error) {
       setError(error.message);

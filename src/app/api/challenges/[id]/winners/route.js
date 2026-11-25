@@ -1,4 +1,3 @@
-
 import { NextResponse } from "next/server";
 import db from "@/lib/db";
 import { requireRole, isSameOriginRequest } from "@/lib/get-user";
@@ -7,9 +6,12 @@ function invalidId(id) {
   return !id || !Number.isInteger(Number(id)) || Number(id) < 1;
 }
 
-// GET: Mengambil daftar pemenang challenge
+// GET: Mengambil daftar pemenang challenge dari database
 export async function GET(request, { params }) {
   try {
+    const { error } = await requireRole(["member", "curator"]);
+    if (error) return error;
+
     const { id } = await params;
 
     if (invalidId(id)) {
@@ -40,6 +42,7 @@ export async function GET(request, { params }) {
          w.submission_id,
          w.rank,
          w.announced_at,
+         s.user_id,
          a.artwork_id,
          a.title,
          a.image_url,
@@ -70,7 +73,7 @@ export async function GET(request, { params }) {
   }
 }
 
-// POST: Curator menentukan pemenang
+// POST: Curator pemilik challenge menentukan pemenang (Juara 1, 2, atau 3)
 export async function POST(request, { params }) {
   if (!isSameOriginRequest(request)) {
     return NextResponse.json(
@@ -116,7 +119,10 @@ export async function POST(request, { params }) {
       rank > 3
     ) {
       return NextResponse.json(
-        { success: false, message: "Submission atau peringkat tidak valid." },
+        {
+          success: false,
+          message: "Submission dan peringkat (Juara 1, 2, atau 3) wajib dipilih dengan benar.",
+        },
         { status: 400 }
       );
     }
@@ -125,37 +131,66 @@ export async function POST(request, { params }) {
 
     await client.query("BEGIN");
 
-    // Pastikan challenge milik Curator dan sudah berakhir.
-    // FOR UPDATE mencegah dua proses pemilihan berjalan bersamaan.
-    const challenge = await client.query(
-      `SELECT challenge_id
+    // 1. Periksa keberadaan challenge, kepemilikan Curator, dan apakah periode sudah berakhir
+    const challengeRes = await client.query(
+      `SELECT
+         challenge_id,
+         curator_id,
+         CURRENT_DATE > end_date::date AS has_ended
        FROM challenges
        WHERE challenge_id = $1
-         AND curator_id = $2
-         AND CURRENT_DATE > end_date
        FOR UPDATE`,
-      [id, user.user_id]
+      [id]
     );
 
-    if (challenge.rowCount === 0) {
+    if (challengeRes.rowCount === 0) {
+      await client.query("ROLLBACK");
+
+      return NextResponse.json(
+        { success: false, message: "Challenge tidak ditemukan." },
+        { status: 404 }
+      );
+    }
+
+    const challengeInfo = challengeRes.rows[0];
+
+    if (Number(challengeInfo.curator_id) !== Number(user.user_id)) {
       await client.query("ROLLBACK");
 
       return NextResponse.json(
         {
           success: false,
-          message: "Challenge belum berakhir atau bukan milikmu.",
+          message:
+            "Kamu tidak memiliki akses untuk menentukan pemenang pada challenge milik Curator lain.",
+        },
+        { status: 403 }
+      );
+    }
+
+    if (!challengeInfo.has_ended) {
+      await client.query("ROLLBACK");
+
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Challenge belum berakhir. Pemenang hanya dapat ditentukan setelah melewati tanggal berakhir challenge.",
         },
         { status: 400 }
       );
     }
 
-    // Pastikan submission aktif dan berasal dari challenge yang benar.
+    // 2. Pastikan submission aktif, berasal dari challenge ini, dan karyanya berstatus published
     const submission = await client.query(
-      `SELECT submission_id
-       FROM challenge_submissions
-       WHERE submission_id = $1
-         AND challenge_id = $2
-         AND status = 'active'`,
+      `SELECT cs.submission_id, a.title, u.username
+       FROM challenge_submissions cs
+       JOIN artworks a ON a.artwork_id = cs.artwork_id
+       JOIN users u ON u.user_id = cs.user_id
+       WHERE cs.submission_id = $1
+         AND cs.challenge_id = $2
+         AND cs.status = 'active'
+         AND a.status = 'published'
+       FOR UPDATE OF cs`,
       [submissionId, id]
     );
 
@@ -165,15 +200,15 @@ export async function POST(request, { params }) {
       return NextResponse.json(
         {
           success: false,
-          message: "Submission tidak ditemukan atau sudah ditarik.",
+          message: "Submission tidak ditemukan, sudah ditarik, atau karya tidak aktif.",
         },
         { status: 404 }
       );
     }
 
-    // Satu submission hanya boleh memperoleh satu peringkat.
+    // 3. Satu submission hanya boleh memperoleh satu peringkat
     const existingSubmission = await client.query(
-      `SELECT winner_id
+      `SELECT winner_id, rank
        FROM challenge_winners
        WHERE submission_id = $1`,
       [submissionId]
@@ -185,13 +220,13 @@ export async function POST(request, { params }) {
       return NextResponse.json(
         {
           success: false,
-          message: "Karya ini sudah ditetapkan sebagai pemenang.",
+          message: `Karya ini sudah ditetapkan sebagai Juara ${existingSubmission.rows[0].rank}.`,
         },
         { status: 409 }
       );
     }
 
-    // Satu peringkat hanya boleh dimiliki satu pemenang.
+    // 4. Satu peringkat hanya boleh dimiliki satu pemenang pada challenge yang sama
     const existingRank = await client.query(
       `SELECT winner_id
        FROM challenge_winners
@@ -206,14 +241,15 @@ export async function POST(request, { params }) {
       return NextResponse.json(
         {
           success: false,
-          message: "Peringkat tersebut sudah memiliki pemenang.",
+          message: `Peringkat Juara ${rank} sudah memiliki pemenang.`,
         },
         { status: 409 }
       );
     }
 
+    // 5. Maksimal 3 pemenang per challenge
     const totalWinners = await client.query(
-      `SELECT COUNT(*) AS total
+      `SELECT COUNT(*)::int AS total
        FROM challenge_winners
        WHERE challenge_id = $1`,
       [id]
@@ -223,7 +259,7 @@ export async function POST(request, { params }) {
       await client.query("ROLLBACK");
 
       return NextResponse.json(
-        { success: false, message: "Maksimal hanya tiga pemenang." },
+        { success: false, message: "Maksimal hanya tiga pemenang untuk setiap challenge." },
         { status: 400 }
       );
     }
@@ -241,7 +277,7 @@ export async function POST(request, { params }) {
     return NextResponse.json(
       {
         success: true,
-        message: "Pemenang berhasil ditentukan.",
+        message: `Berhasil menetapkan "${submission.rows[0].title}" sebagai Juara ${rank}.`,
         data: result.rows[0],
       },
       { status: 201 }
