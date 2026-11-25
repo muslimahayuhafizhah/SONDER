@@ -1,7 +1,7 @@
-
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 
 export default function ExplorePage() {
   const [artworks, setArtworks] = useState([]);
@@ -199,11 +199,12 @@ export default function ExplorePage() {
                   ? artwork.artist_name
                   : artwork.username;
 
-              return (
-                <article
-                  key={artwork.artwork_id}
-                  className="group min-w-0"
-                >
+             return (
+                    <Link
+                        key={artwork.artwork_id}
+                        href={`/artwork/${artwork.artwork_id}`}
+                        className="group block min-w-0"
+                    >
                   <div className="relative h-[340px] overflow-hidden bg-[#DED4C5]">
                     <img
                       src={artwork.image_url}
@@ -239,7 +240,7 @@ export default function ExplorePage() {
                       {artwork.description}
                     </p>
                   )}
-                </article>
+                </Link>
               );
             })}
           </div>

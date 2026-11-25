@@ -1,7 +1,31 @@
 
+import { NextResponse } from "next/server";
 import db from "@/lib/db";
 import { requireRole, isSameOriginRequest } from "@/lib/get-user";
 
+function validDate(date) {
+  if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return false;
+  }
+
+  const parsed = new Date(`${date}T00:00:00Z`);
+
+  return (
+    !Number.isNaN(parsed.getTime()) &&
+    parsed.toISOString().slice(0, 10) === date
+  );
+}
+
+function validUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+// GET: Menampilkan seluruh challenge
 export async function GET() {
   try {
     const result = await db.query(`
@@ -19,24 +43,25 @@ export async function GET() {
       ORDER BY c.created_at DESC
     `);
 
-    return Response.json({
+    return NextResponse.json({
       success: true,
       data: result.rows,
     });
   } catch (error) {
-    console.error("Gagal mengambil challenge:", error);
+    console.error("GET CHALLENGES ERROR:", error);
 
-    return Response.json(
+    return NextResponse.json(
       { success: false, message: "Gagal mengambil data challenge." },
       { status: 500 }
     );
   }
 }
 
+// POST: Curator membuat challenge
 export async function POST(request) {
   try {
     if (!isSameOriginRequest(request)) {
-      return Response.json(
+      return NextResponse.json(
         { success: false, message: "Request tidak valid." },
         { status: 403 }
       );
@@ -45,7 +70,16 @@ export async function POST(request) {
     const { user, error } = await requireRole(["curator"]);
     if (error) return error;
 
-    const body = await request.json();
+    let body;
+
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { success: false, message: "Format data tidak valid." },
+        { status: 400 }
+      );
+    }
 
     const {
       title,
@@ -58,38 +92,48 @@ export async function POST(request) {
     } = body;
 
     if (
-      !title?.trim() ||
-      !description?.trim() ||
-      !rules?.trim() ||
-      !reward?.trim() ||
-      !banner_url?.trim() ||
+      typeof title !== "string" ||
+      typeof description !== "string" ||
+      typeof rules !== "string" ||
+      typeof reward !== "string" ||
+      typeof banner_url !== "string" ||
+      !title.trim() ||
+      !description.trim() ||
+      !rules.trim() ||
+      !reward.trim() ||
+      !banner_url.trim() ||
       !start_date ||
       !end_date
     ) {
-      return Response.json(
+      return NextResponse.json(
         { success: false, message: "Semua data challenge wajib diisi." },
         { status: 400 }
       );
     }
 
-    const start = new Date(start_date);
-    const end = new Date(end_date);
-
-    if (
-      Number.isNaN(start.getTime()) ||
-      Number.isNaN(end.getTime()) ||
-      end <= start
-    ) {
-      return Response.json(
-        { success: false, message: "Tanggal challenge tidak valid. Tanggal akhir harus setelah tanggal mulai." },
+    if (title.trim().length > 150) {
+      return NextResponse.json(
+        { success: false, message: "Judul maksimal 150 karakter." },
         { status: 400 }
       );
     }
 
-    try {
-      new URL(banner_url);
-    } catch {
-      return Response.json(
+    if (
+      !validDate(start_date) ||
+      !validDate(end_date) ||
+      end_date <= start_date
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Tanggal tidak valid. Tanggal akhir harus setelah tanggal mulai.",
+        },
+        { status: 400 }
+      );
+    }
+
+    if (!validUrl(banner_url.trim())) {
+      return NextResponse.json(
         { success: false, message: "URL banner tidak valid." },
         { status: 400 }
       );
@@ -97,7 +141,16 @@ export async function POST(request) {
 
     const result = await db.query(
       `INSERT INTO challenges
-        (curator_id, title, description, rules, reward, banner_url, start_date, end_date)
+        (
+          curator_id,
+          title,
+          description,
+          rules,
+          reward,
+          banner_url,
+          start_date,
+          end_date
+        )
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
       [
@@ -112,7 +165,7 @@ export async function POST(request) {
       ]
     );
 
-    return Response.json(
+    return NextResponse.json(
       {
         success: true,
         message: "Challenge berhasil dibuat.",
@@ -121,9 +174,9 @@ export async function POST(request) {
       { status: 201 }
     );
   } catch (error) {
-    console.error("Gagal membuat challenge:", error);
+    console.error("POST CHALLENGE ERROR:", error);
 
-    return Response.json(
+    return NextResponse.json(
       { success: false, message: "Gagal membuat challenge." },
       { status: 500 }
     );
